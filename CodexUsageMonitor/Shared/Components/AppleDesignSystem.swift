@@ -43,7 +43,6 @@ struct AppBackground: View {
                         endRadius: 820
                     )
                 }
-                .scaleEffect(1.08)
                 .blur(radius: 44, opaque: false)
                 .allowsHitTesting(false)
             }
@@ -107,35 +106,32 @@ struct SymbolTile: View {
 }
 
 struct PrimaryActionButtonStyle: ButtonStyle {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
     func makeBody(configuration: Configuration) -> some View {
+        let feedback = StableButtonPressFeedback(isPressed: configuration.isPressed)
         configuration.label
             .font(.body.weight(.semibold))
             .foregroundStyle(.white)
             .frame(minHeight: AppleUI.controlHeight)
             .padding(.horizontal, 20)
             .background(AppleUI.accent.opacity(configuration.isPressed ? 0.78 : 1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
-            .animation(.spring(duration: 0.3, bounce: 0.2), value: configuration.isPressed)
+            .opacity(feedback.contentOpacity)
     }
 }
 
 struct GlassButtonStyle: ButtonStyle {
     var tint: Color? = nil
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func makeBody(configuration: Configuration) -> some View {
+        let feedback = StableButtonPressFeedback(isPressed: configuration.isPressed)
+        let shape = RoundedRectangle(cornerRadius: 11, style: .continuous)
         configuration.label
             .font(.subheadline.weight(.semibold))
             .padding(.horizontal, 15)
             .frame(minHeight: 36)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-            .overlay { RoundedRectangle(cornerRadius: 11, style: .continuous).fill((tint ?? .clear).opacity(configuration.isPressed ? 0.06 : 0.08)) }
-            .overlay { RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(.primary.opacity(0.07), lineWidth: 0.7) }
-            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.96 : 1)
-            .opacity(configuration.isPressed ? 0.78 : 1)
-            .animation(.spring(duration: 0.28, bounce: 0.18), value: configuration.isPressed)
+            .background(.thinMaterial, in: shape)
+            .overlay { shape.fill((tint ?? Color.primary).opacity(feedback.fillOpacity)) }
+            .overlay { shape.strokeBorder(.primary.opacity(0.07), lineWidth: 0.7) }
+            .opacity(feedback.contentOpacity)
     }
 }
 
@@ -144,7 +140,7 @@ struct CompactGlassButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
-        let feedback = StablePanelPressFeedback(isPressed: configuration.isPressed)
+        let feedback = StableButtonPressFeedback(isPressed: configuration.isPressed)
         configuration.label
             .font(.subheadline.weight(.semibold))
             .padding(.horizontal, 12)
@@ -152,32 +148,28 @@ struct CompactGlassButtonStyle: ButtonStyle {
             .background(.thinMaterial, in: shape)
             .overlay { shape.fill((tint ?? Color.primary).opacity(feedback.fillOpacity)) }
             .overlay { shape.strokeBorder(.primary.opacity(0.065), lineWidth: 0.7) }
-            .scaleEffect(feedback.scale)
             .opacity(feedback.contentOpacity)
     }
 }
 
 struct PanelUtilityButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        let feedback = StablePanelPressFeedback(isPressed: configuration.isPressed)
+        let feedback = StableButtonPressFeedback(isPressed: configuration.isPressed)
         configuration.label
             .background(Color.primary.opacity(configuration.isPressed ? 0.065 : 0))
-            .scaleEffect(feedback.scale)
             .opacity(feedback.contentOpacity)
     }
 }
 
 /// MenuBarExtra window content must keep a stable fitting size while a control is pressed.
 /// Color and opacity provide local feedback; scale intentionally remains at one.
-struct StablePanelPressFeedback: Equatable {
+struct StableButtonPressFeedback: Equatable {
     let contentOpacity: Double
     let fillOpacity: Double
-    let scale: CGFloat
 
     init(isPressed: Bool) {
         contentOpacity = isPressed ? 0.78 : 1
         fillOpacity = isPressed ? 0.12 : 0.045
-        scale = 1
     }
 }
 

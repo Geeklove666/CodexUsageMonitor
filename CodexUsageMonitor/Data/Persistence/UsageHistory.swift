@@ -53,7 +53,13 @@ final class UsageHistoryStore {
         var descriptor = FetchDescriptor<UsageSnapshotEntity>(sortBy: [SortDescriptor(\.fetchedAt, order: .reverse)])
         descriptor.fetchLimit = 1
         let last = try context.fetch(descriptor).first
+        let newAnalyticsData = snapshot.analytics.flatMap { try? JSONEncoder().encode($0) }
         if let last {
+            if last.id == snapshot.id, last.analyticsData != newAnalyticsData {
+                last.analyticsData = newAnalyticsData
+                try context.save()
+                return true
+            }
             let changed = abs((last.primaryRemaining ?? -1) - (snapshot.primaryWindow?.remainingPercentage ?? -1)) >= 0.5
                 || abs((last.secondaryRemaining ?? -1) - (snapshot.secondaryWindow?.remainingPercentage ?? -1)) >= 0.5
                 || last.creditsRemaining != snapshot.credits?.remaining

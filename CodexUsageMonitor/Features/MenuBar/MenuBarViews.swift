@@ -167,8 +167,10 @@ struct MenuPanelView: View {
     private var actions: some View {
         VStack(spacing: 7) {
             HStack(spacing: 7) {
-                Button { Task { await monitor.refresh() } } label: {
-                    Label("刷新", systemImage: "arrow.clockwise").frame(maxWidth: .infinity)
+                Button { requestRefresh() } label: {
+                    Label(monitor.isRefreshing ? "刷新中…" : "刷新",
+                          systemImage: monitor.isRefreshing ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
+                        .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(CompactGlassButtonStyle())
                 .disabled(monitor.isRefreshing)
@@ -247,7 +249,16 @@ struct MenuPanelView: View {
     }
 
     private var localCodexActionTitle: String {
-        reuseLocalCodexLogin && !localRealtimeTokenUsage ? "启用今日 Token" : "复用本机 Codex"
+        if !reuseLocalCodexLogin { return "授权本机 Codex" }
+        return localRealtimeTokenUsage ? "复用本机 Codex" : "启用今日 Token"
+    }
+
+    private func requestRefresh() {
+        if RefreshAuthorizationPolicy.requiresLocalCodexConsent(isAuthorized: reuseLocalCodexLogin) {
+            showsLocalCodexConsent = true
+        } else {
+            Task { await monitor.refresh() }
+        }
     }
 }
 

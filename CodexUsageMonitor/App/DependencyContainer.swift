@@ -30,7 +30,7 @@ final class DependencyContainer {
             session: webSession, apiParser: OfficialUsageAPIParser(), parser: OfficialPageDOMParser()
         )
         let realtimeTokenReader = LocalRealtimeTokenUsageReader()
-        let localSource = LocalCodexSessionDataSource(realtimeTokenReader: realtimeTokenReader)
+        let localSource = LocalCodexSessionDataSource()
         repository = DefaultCodexUsageRepository(
             official: VerifiedOfficialDataSource(),
             localCodex: localSource,

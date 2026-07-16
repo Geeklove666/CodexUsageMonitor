@@ -20,10 +20,10 @@ struct SettingsView: View {
     @State private var selection: SettingsSection = .general
     @State private var showsLocalCodexConsent = false
     @State private var showsRealtimeTokenConsent = false
+    @State private var showsClearAllConfirmation = false
     @State private var notificationAuthorization: NotificationAuthorizationState = .unknown
     @State private var launchAtLoginState: LaunchAtLoginService.State = .disabled
     @State private var launchAtLoginError: String?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
@@ -41,7 +41,6 @@ struct SettingsView: View {
                             case .privacy: privacySettings
                             }
                         }
-                        .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }
                     .padding(24)
                     .frame(maxWidth: 720)
@@ -50,7 +49,6 @@ struct SettingsView: View {
             }
         }
         .frame(minWidth: 640, idealWidth: 720, minHeight: 500, idealHeight: 560)
-        .animation(reduceMotion ? nil : .spring(duration: 0.3, bounce: 0.06), value: selection)
         .alert("授权复用本机 Codex 登录？", isPresented: $showsLocalCodexConsent) {
             Button("授权并启用") {
                 reuseLocalCodexLogin = true
@@ -69,6 +67,19 @@ struct SettingsView: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("应用只扫描 ~/.codex/sessions 中结构化的 token_count 事件及时间戳，用于计算这台 Mac 今天的 Token 消耗；不会提取或保存提示词、代码、工具输出、文件路径或消息正文。可随时在此撤销授权。")
+        }
+        .alert("清除全部本地数据？", isPresented: $showsClearAllConfirmation) {
+            Button("确认清除", role: .destructive) {
+                Task {
+                    await session.clearLoginState()
+                    try? history.clear()
+                    clearOrdinarySettings()
+                    message = "本地数据与数据源授权已清除"
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("这会清除历史、网页登录状态、本机 Codex 与实时 Token 授权。下次刷新需要重新确认授权。")
         }
         .task {
             notificationAuthorization = await NotificationService().authorizationState()
@@ -278,14 +289,14 @@ struct SettingsView: View {
                         do { try history.clear(); message = "历史已清除" } catch { message = "清除失败" }
                     }
                     privacyButton("清除全部本地数据", symbol: "trash.fill", destructive: true) {
-                        Task { await session.clearLoginState(); try? history.clear(); clearOrdinarySettings(); message = "本地数据已清除" }
+                        showsClearAllConfirmation = true
                     }
                 }
             }
             if let message {
                 Label(message, systemImage: "checkmark.circle.fill")
                     .font(.subheadline).foregroundStyle(AppleUI.success)
-                    .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                    .transition(.opacity)
             }
         }
     }

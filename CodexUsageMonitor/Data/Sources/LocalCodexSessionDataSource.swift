@@ -85,19 +85,19 @@ struct LocalCodexSessionDataSource: CodexUsageDataSource, CodexAnalyticsDataSour
     let locator: CodexExecutableLocator
     let parser: CodexAppServerRateLimitParser
     let usageParser: CodexAppServerAccountUsageParser
-    let realtimeTokenReader: LocalRealtimeTokenUsageReader
     let accountUsageCache: LocalAccountUsageCache
+    let quotaCache: LocalQuotaSnapshotCache
 
     init(locator: CodexExecutableLocator = CodexExecutableLocator(),
          parser: CodexAppServerRateLimitParser = CodexAppServerRateLimitParser(),
          usageParser: CodexAppServerAccountUsageParser = CodexAppServerAccountUsageParser(),
-         realtimeTokenReader: LocalRealtimeTokenUsageReader = LocalRealtimeTokenUsageReader(),
-         accountUsageCache: LocalAccountUsageCache = LocalAccountUsageCache()) {
+         accountUsageCache: LocalAccountUsageCache = LocalAccountUsageCache(),
+         quotaCache: LocalQuotaSnapshotCache = LocalQuotaSnapshotCache()) {
         self.locator = locator
         self.parser = parser
         self.usageParser = usageParser
-        self.realtimeTokenReader = realtimeTokenReader
         self.accountUsageCache = accountUsageCache
+        self.quotaCache = quotaCache
     }
 
     func availability() async -> DataSourceAvailability {
@@ -112,18 +112,12 @@ struct LocalCodexSessionDataSource: CodexUsageDataSource, CodexAnalyticsDataSour
         guard UserDefaults.standard.bool(forKey: LocalCodexSessionAuthorization.preferenceKey) else {
             throw LocalCodexSessionError.notAuthorized
         }
+        if let cached = await quotaCache.freshValue() { return cached }
         guard let executable = locator.locate() else { throw LocalCodexSessionError.executableMissing }
         let responses = try await CodexAppServerClient(executable: executable).readAccountAndRateLimits()
         let quota = try parser.parse(account: responses.account, rateLimits: responses.rateLimits)
-        guard let analytics = await realtimeTokenReader.analyticsSnapshot() else { return quota }
-        return CodexUsageSnapshot(
-            id: quota.id, fetchedAt: quota.fetchedAt, sourceUpdatedAt: quota.sourceUpdatedAt,
-            planName: quota.planName, primaryWindow: quota.primaryWindow, secondaryWindow: quota.secondaryWindow,
-            credits: quota.credits, resetAllowance: quota.resetAllowance, analytics: analytics, sourceKind: quota.sourceKind,
-            sourceDisplayName: quota.sourceDisplayName, isEstimated: quota.isEstimated, isCached: quota.isCached,
-            confidence: quota.confidence, fieldCompleteness: quota.fieldCompleteness,
-            expiresAt: quota.expiresAt, diagnosticMessage: quota.diagnosticMessage
-        )
+        await quotaCache.store(quota)
+        return quota
     }
 
     func analyticsAvailability() async -> DataSourceAvailability { await availability() }
@@ -139,6 +133,24 @@ struct LocalCodexSessionDataSource: CodexUsageDataSource, CodexAnalyticsDataSour
         let response = try await CodexAppServerClient(executable: executable).readAccountUsage()
         await accountUsageCache.store(response)
         return try usageParser.parse(response: response)
+    }
+}
+
+actor LocalQuotaSnapshotCache {
+    private var value: CodexUsageSnapshot?
+    private var storedAt: Date?
+    private let lifetime: TimeInterval
+
+    init(lifetime: TimeInterval = 45) { self.lifetime = lifetime }
+
+    func freshValue(now: Date = .now) -> CodexUsageSnapshot? {
+        guard let value, let storedAt, now.timeIntervalSince(storedAt) < lifetime else { return nil }
+        return value
+    }
+
+    func store(_ value: CodexUsageSnapshot, now: Date = .now) {
+        self.value = value
+        storedAt = now
     }
 }
 

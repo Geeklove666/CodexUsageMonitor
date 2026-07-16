@@ -112,11 +112,15 @@ struct CodexUsageSnapshot: Identifiable, Sendable, Codable, Equatable {
 
 enum DataSourceAvailability: Sendable, Equatable { case available, authenticationRequired, unavailable(String) }
 
+enum RefreshAuthorizationPolicy {
+    static func requiresLocalCodexConsent(isAuthorized: Bool) -> Bool { !isAuthorized }
+}
+
 enum MonitoringStatus: String, Sendable, Equatable {
     case refreshing, live, cached, estimated, needsLogin, degraded, unavailable
 
     init(snapshot: CodexUsageSnapshot, lastError: String?, isRefreshing: Bool) {
-        if isRefreshing && snapshot.sourceKind == .unavailable {
+        if isRefreshing {
             self = .refreshing
         } else if snapshot.isCached {
             self = lastError == nil ? .cached : .degraded

@@ -10,7 +10,9 @@ struct DashboardView: View {
     @State private var points: [UsageSnapshotEntity] = []
     @State private var selection: DashboardSection = .overview
     @State private var showsTechnicalDiagnostics = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var showsLocalCodexConsent = false
+    @AppStorage(LocalCodexSessionAuthorization.preferenceKey) private var reuseLocalCodexLogin = false
+    @AppStorage(LocalRealtimeTokenAuthorization.preferenceKey) private var localRealtimeTokenUsage = false
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
     @Environment(WebViewSession.self) private var webSession
@@ -41,17 +43,25 @@ struct DashboardView: View {
                             case .diagnostics: diagnosticsContent
                             }
                         }
-                        .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }
                     .padding(22)
                     .frame(maxWidth: 1040, alignment: .leading)
                     .frame(maxWidth: .infinity)
                 }
             }
-            .animation(reduceMotion ? nil : .spring(duration: 0.36, bounce: 0.08), value: selection)
         }
         .task { monitor.start(); loadPoints() }
         .onChange(of: monitor.historyRevision) { loadPoints() }
+        .alert("授权复用本机 Codex 登录？", isPresented: $showsLocalCodexConsent) {
+            Button("授权并刷新") {
+                reuseLocalCodexLogin = true
+                localRealtimeTokenUsage = true
+                Task { await monitor.refresh(); loadPoints() }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("应用将通过本机 Codex 官方 app-server 读取套餐与额度，并只扫描 token_count 事件计算今日 Token；不会直接读取 auth.json、登录 Token、提示词、回复或代码正文。")
+        }
     }
 
     private var sidebarStatus: some View {
@@ -96,9 +106,14 @@ struct DashboardView: View {
         HStack(spacing: 10) {
             ProgressView().controlSize(.small).opacity(monitor.isRefreshing ? 1 : 0).frame(width: 16)
             Button {
-                Task { await monitor.refresh(); loadPoints() }
+                if RefreshAuthorizationPolicy.requiresLocalCodexConsent(isAuthorized: reuseLocalCodexLogin) {
+                    showsLocalCodexConsent = true
+                } else {
+                    Task { await monitor.refresh(); loadPoints() }
+                }
             } label: {
-                Label("刷新", systemImage: "arrow.clockwise")
+                Label(monitor.isRefreshing ? "刷新中…" : "刷新",
+                      systemImage: monitor.isRefreshing ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
             }
             .buttonStyle(GlassButtonStyle())
             .disabled(monitor.isRefreshing)

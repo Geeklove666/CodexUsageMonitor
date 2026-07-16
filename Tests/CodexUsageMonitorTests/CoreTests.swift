@@ -35,6 +35,20 @@ final class ModelAndFormattingTests: XCTestCase {
 }
 
 final class MonitoringStatusTests: XCTestCase {
+    func testRefreshRequiresConsentWhenLocalAuthorizationWasCleared() {
+        XCTAssertTrue(RefreshAuthorizationPolicy.requiresLocalCodexConsent(isAuthorized: false))
+        XCTAssertFalse(RefreshAuthorizationPolicy.requiresLocalCodexConsent(isAuthorized: true))
+    }
+
+    func testCachedSnapshotStillReportsRefreshingWhileRequestIsRunning() {
+        let cached = CodexUsageSnapshot(
+            primaryWindow: UsageLimitWindow(kind: .primary, remainingPercentage: 70, usedPercentage: 30, resetsAt: nil, durationDescription: nil),
+            sourceKind: .cachedSnapshot, sourceDisplayName: "cache", isCached: true,
+            confidence: .medium, fieldCompleteness: 0.25
+        )
+        XCTAssertEqual(MonitoringStatus(snapshot: cached, lastError: nil, isRefreshing: true), .refreshing)
+    }
+
     func testUnavailableSnapshotIsNeverReportedLive() {
         XCTAssertEqual(MonitoringStatus(snapshot: .unavailable, lastError: nil, isRefreshing: false), .needsLogin)
         XCTAssertEqual(MonitoringStatus(snapshot: .unavailable, lastError: "当前网络不可用", isRefreshing: false), .unavailable)
@@ -194,6 +208,25 @@ final class CodexAppServerRateLimitParserTests: XCTestCase {
         XCTAssertEqual(snapshot.credits?.remaining, Decimal(string: "12.75"))
         XCTAssertEqual(snapshot.credits?.currencyOrUnit, "Credits")
         XCTAssertTrue(snapshot.diagnosticMessage?.contains("个人消费限制剩余 72%") == true)
+    }
+}
+
+final class LocalQuotaSnapshotCacheTests: XCTestCase {
+    func testCachedQuotaIsFreshOnlyWithinConfiguredLifetime() async {
+        let cache = LocalQuotaSnapshotCache(lifetime: 45)
+        let storedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let snapshot = CodexUsageSnapshot(
+            id: UUID(), fetchedAt: storedAt,
+            primaryWindow: UsageLimitWindow(kind: .primary, remainingPercentage: 75, usedPercentage: 25, resetsAt: nil, durationDescription: nil),
+            sourceKind: .localCodexSession, sourceDisplayName: "test", confidence: .verified, fieldCompleteness: 0.25
+        )
+
+        await cache.store(snapshot, now: storedAt)
+
+        let fresh = await cache.freshValue(now: storedAt.addingTimeInterval(44.9))
+        let expired = await cache.freshValue(now: storedAt.addingTimeInterval(45))
+        XCTAssertEqual(fresh?.id, snapshot.id)
+        XCTAssertNil(expired)
     }
 }
 
@@ -613,6 +646,8 @@ final class RepositoryTests: XCTestCase {
             cache: cache, estimate: LocalEstimateDataSource())
         let kind = try await repository.fetch().sourceKind
         XCTAssertEqual(kind, .cachedSnapshot)
+        let diagnostic = await repository.currentDiagnostic()
+        XCTAssertEqual(diagnostic.lastFailure, UsageMonitorError.parsingFailed.localizedDescription)
     }
     func testAllSourcesFail() async {
         let failed = StubDataSource("x", kind: .verifiedOfficial, state: .unavailable("no"), result: .failure(UsageMonitorError.noAvailableDataSource))
@@ -682,14 +717,24 @@ final class RepositoryTests: XCTestCase {
 
 @MainActor
 final class NativeUISnapshotSmokeTests: XCTestCase {
-    func testMenuPanelPressFeedbackChangesOnlyLocalAppearance() {
-        let idle = StablePanelPressFeedback(isPressed: false)
-        let pressed = StablePanelPressFeedback(isPressed: true)
+    func testButtonPressFeedbackChangesOnlyLocalAppearance() {
+        let idle = StableButtonPressFeedback(isPressed: false)
+        let pressed = StableButtonPressFeedback(isPressed: true)
 
-        XCTAssertEqual(idle.scale, 1)
-        XCTAssertEqual(pressed.scale, 1)
         XCTAssertLessThan(pressed.contentOpacity, idle.contentOpacity)
         XCTAssertGreaterThan(pressed.fillOpacity, idle.fillOpacity)
+    }
+
+    func testDesignSystemDoesNotApplyScaleEffects() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = repositoryRoot
+            .appendingPathComponent("CodexUsageMonitor/Shared/Components/AppleDesignSystem.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertFalse(source.contains(".scaleEffect("))
     }
 
     func testCompactUsageSummaryRendersAtMenuWidth() throws {

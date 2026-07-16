@@ -14,6 +14,7 @@ final class UsageMonitoringService {
     private let resetDetector = ResetDetectionService()
     private var loopTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
+    private var analyticsTask: Task<Void, Never>?
     private var failures = 0
 
     var snapshot = CodexUsageSnapshot.unavailable
@@ -60,48 +61,80 @@ final class UsageMonitoringService {
             return
         }
         isRefreshing = true
+        analyticsTask?.cancel()
         refreshTask = Task { [weak self] in
             guard let self else { return }
-            let realtime = await self.realtimeTokenReader.analyticsSnapshot()
-            if let realtime { self.snapshot = self.snapshot.mergingAnalytics(realtime) }
-            guard self.networkMonitor.isOnline else {
-                self.lastError = UsageMonitorError.networkUnavailable.localizedDescription
-                return
-            }
+            let previous = self.snapshot
+            async let realtimeValue = self.realtimeTokenReader.analyticsSnapshot()
             do {
-                let previous = self.snapshot
                 var quota = try await self.repository.fetchQuota()
-                if let realtime { quota = quota.mergingAnalytics(realtime) }
+                if let realtime = await realtimeValue { quota = quota.mergingAnalytics(realtime) }
                 self.snapshot = quota
-                self.lastError = nil
-                self.failures = 0
-                self.logger.info("Quota refresh succeeded via \(quota.sourceKind.rawValue, privacy: .public)")
-                self.isRefreshing = false
-
-                let value = await self.repository.fetchAnalytics(for: quota)
-                self.snapshot = value
-                self.logger.info("Analytics enrichment finished")
-                let reset = self.resetDetector.isReset(old: previous, new: value)
-                do {
-                    if try self.history.saveIfNeeded(value, processActive: self.processMonitor.isActive()) {
-                        self.historyRevision += 1
-                    }
-                } catch {
-                    self.persistenceWarning = "历史保存失败：\(SensitiveDataRedactor().redact(error.localizedDescription))"
+                self.diagnostic = await self.repository.currentDiagnostic()
+                if quota.isCached || quota.isEstimated {
+                    self.lastError = self.diagnostic.lastFailure ?? "未能获取新额度，正在保留上次数据"
+                    self.failures += 1
+                    self.logger.warning("Quota refresh fell back to \(quota.sourceKind.rawValue, privacy: .public)")
+                } else {
+                    self.lastError = nil
+                    self.failures = 0
+                    self.logger.info("Quota refresh succeeded via \(quota.sourceKind.rawValue, privacy: .public)")
                 }
-                await self.notificationService.evaluate(previous: previous, current: value, reset: reset)
+                await self.persistAndNotify(previous: previous, current: quota)
+                self.startAnalyticsEnrichment(for: quota)
             } catch {
+                if let realtime = await realtimeValue {
+                    self.snapshot = self.snapshot.mergingAnalytics(realtime)
+                }
                 self.failures += 1
                 let redacted = SensitiveDataRedactor().redact(error.localizedDescription)
-                self.lastError = realtime == nil ? redacted : "额度刷新失败；今日 Token 已更新"
+                let quotaError = UserDefaults.standard.bool(forKey: LocalCodexSessionAuthorization.preferenceKey)
+                    ? redacted : "尚未授权复用本机 Codex 登录"
+                self.lastError = self.snapshot.analytics?.todayTokens == nil
+                    ? quotaError : "\(quotaError)；今日 Token 保留上次结果"
                 self.logger.error("Usage refresh failed: \(redacted, privacy: .public)")
+                self.diagnostic = await self.repository.currentDiagnostic()
             }
-            self.diagnostic = await self.repository.currentDiagnostic()
         }
         await refreshTask?.value
         refreshTask = nil
         isRefreshing = false; now = .now
     }
 
-    func cancel() { loopTask?.cancel(); refreshTask?.cancel(); loopTask = nil; refreshTask = nil }
+    private func startAnalyticsEnrichment(for quota: CodexUsageSnapshot) {
+        analyticsTask = Task { [weak self] in
+            guard let self else { return }
+            let enriched = await self.repository.fetchAnalytics(for: quota)
+            guard !Task.isCancelled else { return }
+            if let analytics = enriched.analytics {
+                self.snapshot = self.snapshot.mergingAnalytics(analytics)
+            }
+            self.logger.info("Analytics enrichment finished")
+            do {
+                if try self.history.saveIfNeeded(self.snapshot, processActive: self.processMonitor.isActive()) {
+                    self.historyRevision += 1
+                }
+            } catch {
+                self.persistenceWarning = "历史保存失败：\(SensitiveDataRedactor().redact(error.localizedDescription))"
+            }
+            self.diagnostic = await self.repository.currentDiagnostic()
+        }
+    }
+
+    private func persistAndNotify(previous: CodexUsageSnapshot, current: CodexUsageSnapshot) async {
+        let reset = resetDetector.isReset(old: previous, new: current)
+        do {
+            if try history.saveIfNeeded(current, processActive: processMonitor.isActive()) {
+                historyRevision += 1
+            }
+        } catch {
+            persistenceWarning = "历史保存失败：\(SensitiveDataRedactor().redact(error.localizedDescription))"
+        }
+        await notificationService.evaluate(previous: previous, current: current, reset: reset)
+    }
+
+    func cancel() {
+        loopTask?.cancel(); refreshTask?.cancel(); analyticsTask?.cancel()
+        loopTask = nil; refreshTask = nil; analyticsTask = nil
+    }
 }

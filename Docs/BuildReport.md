@@ -19,7 +19,7 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift package clea
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift build
 ```
 
-最终结果：成功，0 个错误。当前版本为 1.8.2（Build 25），最低部署版本 macOS 14。Xcode 27 beta 在构建 Universal 2 时提示 `x86_64` 对 macOS 27 部署目标已弃用；最终二进制仍同时包含 `arm64` 与 `x86_64`，其 `LC_BUILD_VERSION` 最低版本为 14.0。
+最终结果：成功，0 个错误。当前版本为 1.8.7（Build 30），最低部署版本 macOS 14。Xcode 27 beta 在构建 Universal 2 时提示 `x86_64` 对 macOS 27 部署目标已弃用；最终二进制仍同时包含 `arm64` 与 `x86_64`，其 `LC_BUILD_VERSION` 最低版本为 14.0。
 
 ## XCTest
 
@@ -29,19 +29,19 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift build
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test
 ```
 
-最终结果：63 个 XCTest 全部通过，0 个失败、0 个未执行。覆盖 WebView 注入脚本、今日 Token、app-server Credits/个人消费限制、字段来源合并、Analytics 缓存恢复，以及菜单面板按钮按压不改变布局缩放的 1.8.2 回归。原先未被主程序依赖的重复 `Core` Package 已移除。
+最终结果：67 个 XCTest 全部通过，0 个失败、0 个未执行。覆盖 WebView 注入脚本、今日 Token、app-server Credits/个人消费限制、字段来源合并、额度短缓存、授权恢复路由、缓存刷新状态、Analytics 缓存恢复，以及设计系统不再应用缩放变换的回归。原先未被主程序依赖的重复 `Core` Package 已移除。
 
 ## 启动冒烟测试
 
 执行 Debug 可执行文件后等待 5 秒。进程保持运行，无 stdout/stderr 错误，证明 SwiftUI 菜单栏应用完成启动且未立即崩溃。
 
-## 1.8.2 DMG
+## 1.8.7 DMG
 
-- 文件：`Codex-Usage-Monitor-1.8.2-universal.dmg`；
+- 文件：`Codex-Usage-Monitor-1.8.7-universal.dmg`；
 - 架构：`arm64`、`x86_64`；
 - 最低 macOS：14.0；
 - 签名：ad-hoc，仅供开发测试；
-- SHA-256：`a24c003422fd1b4084fbb2ee7f3e9d59d38e4feebc426979807ac39ccfd593cd`。
+- SHA-256：`08cb3dd7d54bf4af46a57e75cc7071287937b027138b3b5c870790accbca2c2b`。
 
 ## 本轮刻意保留
 

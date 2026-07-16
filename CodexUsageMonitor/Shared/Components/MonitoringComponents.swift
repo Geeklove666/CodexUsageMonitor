@@ -207,7 +207,9 @@ struct MonitoringStatusBar: View {
         case .cached: return "缓存数据 · \(RelativeFormatter.text(snapshot.fetchedAt))"
         case .estimated: return "本地估算 · \(RelativeFormatter.text(snapshot.fetchedAt))"
         case .needsLogin: return lastError ?? "需要登录后读取额度"
-        case .degraded: return "刷新失败 · 保留 \(RelativeFormatter.text(snapshot.fetchedAt)) 的数据"
+        case .degraded:
+            if let lastError { return "刷新失败：\(lastError) · 保留旧数据" }
+            return "刷新失败 · 保留 \(RelativeFormatter.text(snapshot.fetchedAt)) 的数据"
         case .unavailable: return lastError ?? "当前没有可用数据"
         }
     }
