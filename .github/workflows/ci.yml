@@ -1,0 +1,20 @@
+name: macOS CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate metadata and packaging script
+        run: |
+          plutil -lint CodexUsageMonitor/Resources/Info.plist
+          plutil -lint CodexUsageMonitor/Resources/PrivacyInfo.xcprivacy
+          bash -n Scripts/package-dmg.sh
+      - name: Build
+        run: swift build
+      - name: Test
+        run: swift test

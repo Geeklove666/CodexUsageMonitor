@@ -1,0 +1,22 @@
+{
+  "/backend-api/wham/analytics/daily-workspace-usage-counts": {
+    "group_by": "day",
+    "data": [
+      {
+        "date": "2026-07-15",
+        "totals": {
+          "users": 1,
+          "threads": 2,
+          "turns": 5,
+          "credits": 1.25,
+          "uncached_text_input_tokens": 1200,
+          "cached_text_input_tokens": 800,
+          "text_output_tokens": 300,
+          "text_total_tokens": 2300
+        },
+        "clients": [],
+        "models": []
+      }
+    ]
+  }
+}

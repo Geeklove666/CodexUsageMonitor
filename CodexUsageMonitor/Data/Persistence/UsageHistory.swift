@@ -1,0 +1,124 @@
+import Foundation
+import SwiftData
+
+@Model
+final class UsageSnapshotEntity {
+    @Attribute(.unique) var id: UUID
+    var fetchedAt: Date
+    var sourceUpdatedAt: Date?
+    var planName: String?
+    var primaryRemaining: Double?
+    var primaryReset: Date?
+    var primaryDuration: String?
+    var secondaryRemaining: Double?
+    var secondaryReset: Date?
+    var secondaryDuration: String?
+    var creditsRemaining: Decimal?
+    var creditsUnit: String?
+    var resetAllowanceData: Data?
+    var analyticsData: Data?
+    var sourceKindRaw: String
+    var isEstimated: Bool
+    var isCached: Bool
+    var confidenceRaw: String
+    var fieldCompleteness: Double
+    var processActive: Bool
+
+    init(snapshot: CodexUsageSnapshot, processActive: Bool) {
+        id = snapshot.id; fetchedAt = snapshot.fetchedAt; sourceUpdatedAt = snapshot.sourceUpdatedAt; planName = snapshot.planName
+        primaryRemaining = snapshot.primaryWindow?.remainingPercentage; primaryReset = snapshot.primaryWindow?.resetsAt
+        primaryDuration = snapshot.primaryWindow?.durationDescription
+        secondaryRemaining = snapshot.secondaryWindow?.remainingPercentage; secondaryReset = snapshot.secondaryWindow?.resetsAt
+        secondaryDuration = snapshot.secondaryWindow?.durationDescription
+        creditsRemaining = snapshot.credits?.remaining; creditsUnit = snapshot.credits?.currencyOrUnit
+        resetAllowanceData = snapshot.resetAllowance.flatMap { try? JSONEncoder().encode($0) }
+        analyticsData = snapshot.analytics.flatMap { try? JSONEncoder().encode($0) }
+        sourceKindRaw = snapshot.sourceKind.rawValue
+        isEstimated = snapshot.isEstimated; isCached = snapshot.isCached; confidenceRaw = snapshot.confidence.rawValue
+        fieldCompleteness = snapshot.fieldCompleteness; self.processActive = processActive
+    }
+}
+
+@MainActor
+final class UsageHistoryStore {
+    let container: ModelContainer
+    private var context: ModelContext { container.mainContext }
+
+    init(inMemory: Bool = false) throws {
+        let configuration = ModelConfiguration(isStoredInMemoryOnly: inMemory)
+        container = try ModelContainer(for: UsageSnapshotEntity.self, configurations: configuration)
+    }
+
+    func saveIfNeeded(_ snapshot: CodexUsageSnapshot, processActive: Bool) throws -> Bool {
+        var descriptor = FetchDescriptor<UsageSnapshotEntity>(sortBy: [SortDescriptor(\.fetchedAt, order: .reverse)])
+        descriptor.fetchLimit = 1
+        let last = try context.fetch(descriptor).first
+        if let last {
+            let changed = abs((last.primaryRemaining ?? -1) - (snapshot.primaryWindow?.remainingPercentage ?? -1)) >= 0.5
+                || abs((last.secondaryRemaining ?? -1) - (snapshot.secondaryWindow?.remainingPercentage ?? -1)) >= 0.5
+                || last.creditsRemaining != snapshot.credits?.remaining
+                || last.restoredResetAllowance?.availableCount != snapshot.resetAllowance?.availableCount
+                || last.primaryReset != snapshot.primaryWindow?.resetsAt
+                || last.secondaryReset != snapshot.secondaryWindow?.resetsAt
+                || last.sourceKindRaw != snapshot.sourceKind.rawValue
+                || snapshot.fetchedAt.timeIntervalSince(last.fetchedAt) >= 600
+            guard changed else { return false }
+        }
+        context.insert(UsageSnapshotEntity(snapshot: snapshot, processActive: processActive))
+        try context.save(); return true
+    }
+
+    func points(since date: Date) throws -> [UsageSnapshotEntity] {
+        let descriptor = FetchDescriptor<UsageSnapshotEntity>(predicate: #Predicate { $0.fetchedAt >= date }, sortBy: [SortDescriptor(\.fetchedAt)])
+        return try context.fetch(descriptor)
+    }
+
+    func recentSnapshots(limit: Int = 12) throws -> [CodexUsageSnapshot] {
+        var descriptor = FetchDescriptor<UsageSnapshotEntity>(sortBy: [SortDescriptor(\.fetchedAt, order: .reverse)])
+        descriptor.fetchLimit = max(1, limit)
+        return try context.fetch(descriptor).reversed().compactMap { $0.restoredSnapshot }
+    }
+
+    func cleanup(retentionDays: Int) throws {
+        let cutoff = Calendar.current.date(byAdding: .day, value: -retentionDays, to: .now) ?? .distantPast
+        try context.delete(model: UsageSnapshotEntity.self, where: #Predicate { $0.fetchedAt < cutoff })
+        try context.save()
+    }
+
+    func clear() throws {
+        try context.delete(model: UsageSnapshotEntity.self)
+        try context.save()
+    }
+}
+
+private extension UsageSnapshotEntity {
+    var restoredSnapshot: CodexUsageSnapshot? {
+        guard !isEstimated,
+              let sourceKind = UsageSourceKind(rawValue: sourceKindRaw),
+              let confidence = UsageConfidence(rawValue: confidenceRaw) else { return nil }
+        let primary = primaryRemaining.map {
+            UsageLimitWindow(kind: .primary, remainingPercentage: $0, usedPercentage: 100 - $0,
+                             resetsAt: primaryReset, durationDescription: primaryDuration)
+        }
+        let secondary = secondaryRemaining.map {
+            UsageLimitWindow(kind: .secondary, remainingPercentage: $0, usedPercentage: 100 - $0,
+                             resetsAt: secondaryReset, durationDescription: secondaryDuration)
+        }
+        let credits = (creditsRemaining != nil || creditsUnit != nil)
+            ? CreditsUsage(remaining: creditsRemaining, used: nil, currencyOrUnit: creditsUnit, expiresAt: nil)
+            : nil
+        let analytics = analyticsData.flatMap { try? JSONDecoder().decode(CodexAnalyticsSnapshot.self, from: $0) }
+        let resetAllowance = restoredResetAllowance
+        return CodexUsageSnapshot(
+            id: id, fetchedAt: fetchedAt, sourceUpdatedAt: sourceUpdatedAt, planName: planName,
+            primaryWindow: primary, secondaryWindow: secondary, credits: credits,
+            resetAllowance: resetAllowance, analytics: analytics,
+            sourceKind: sourceKind, sourceDisplayName: sourceKind.label,
+            confidence: confidence, fieldCompleteness: fieldCompleteness
+        )
+    }
+
+    var restoredResetAllowance: UsageResetAllowance? {
+        resetAllowanceData.flatMap { try? JSONDecoder().decode(UsageResetAllowance.self, from: $0) }
+    }
+}

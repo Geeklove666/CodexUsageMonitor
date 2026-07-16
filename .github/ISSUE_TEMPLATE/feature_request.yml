@@ -1,0 +1,25 @@
+name: 功能建议
+description: 建议一个清晰、符合隐私边界的改进
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 使用场景
+      description: 当前遇到了什么问题？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案
+    validations:
+      required: true
+  - type: textarea
+    id: privacy
+    attributes:
+      label: 数据与隐私影响
+      description: 是否需要新增网络请求、文件读取、系统权限或持久化数据？
+    validations:
+      required: true
