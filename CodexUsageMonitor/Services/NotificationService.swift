@@ -24,14 +24,18 @@ actor NotificationService {
     }
 
     func authorizationState() async -> NotificationAuthorizationState {
-        let settings = await UNUserNotificationCenter.current().notificationSettings()
-        return switch settings.authorizationStatus {
-        case .notDetermined: .notDetermined
-        case .denied: .denied
-        case .authorized: .authorized
-        case .provisional: .provisional
-        case .ephemeral: .ephemeral
-        @unknown default: .unknown
+        await withCheckedContinuation { continuation in
+            UNUserNotificationCenter.current().getNotificationSettings { settings in
+                let state: NotificationAuthorizationState = switch settings.authorizationStatus {
+                case .notDetermined: .notDetermined
+                case .denied: .denied
+                case .authorized: .authorized
+                case .provisional: .provisional
+                case .ephemeral: .ephemeral
+                @unknown default: .unknown
+                }
+                continuation.resume(returning: state)
+            }
         }
     }
 

@@ -65,10 +65,10 @@ enum SubscriptionTierFormatter {
     private static func proMultiplier(in value: String) -> Int? {
         let parts = value.split(whereSeparator: { $0 == " " })
         guard parts.first == "pro" else { return nil }
-        return parts.dropFirst().compactMap { part in
-            guard part.hasSuffix("x") else { return nil }
-            return Int(part.dropLast())
-        }.first
+        for part in parts.dropFirst() where part.hasSuffix("x") {
+            if let multiplier = Int(part.dropLast()) { return multiplier }
+        }
+        return nil
     }
 }
 

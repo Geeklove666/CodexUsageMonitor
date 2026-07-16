@@ -41,7 +41,7 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test
 - 架构：`arm64`、`x86_64`；
 - 最低 macOS：14.0；
 - 签名：ad-hoc，仅供开发测试；
-- SHA-256：`08cb3dd7d54bf4af46a57e75cc7071287937b027138b3b5c870790accbca2c2b`。
+- SHA-256：`a79ba50ed3506d6d26b77e07f0d5404c8e1b612d67d20994ade2184a9aa1f0fa`。
 
 ## 本轮刻意保留
 
