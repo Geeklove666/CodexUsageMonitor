@@ -691,8 +691,8 @@ final class NativeUISnapshotSmokeTests: XCTestCase {
         for destination in ["概览", "使用历史", "告警", "数据来源", "设置"] {
             XCTAssertTrue(source.contains(destination), "Missing dashboard destination: \(destination)")
         }
-        for state in ["loading", "cached", "estimated", "offline", "unavailable", "exhausted"] {
-            XCTAssertTrue(source.contains("case \(state)"), "Missing Demo state: \(state)")
+        for state in ["live", "loading", "cached", "estimated", "offline", "unavailable", "exhausted"] {
+            XCTAssertTrue(source.contains("case \(state)"), "Missing dashboard state: \(state)")
         }
         for plan in ["$0/月", "$8/月", "$20/月", "$100/月", "$200/月"] {
             XCTAssertTrue(source.contains(plan), "Missing US pricing baseline: \(plan)")
@@ -700,7 +700,10 @@ final class NativeUISnapshotSmokeTests: XCTestCase {
         XCTAssertTrue(source.contains("自动刷新频率"))
         XCTAssertTrue(source.contains("AutoRefreshFrequency.allCases"))
         XCTAssertTrue(source.contains("真实刷新诊断"))
-        XCTAssertTrue(source.contains("Demo"))
+        XCTAssertTrue(source.contains("DemoQuotaSnapshot.make(snapshot: monitor.snapshot"))
+        XCTAssertFalse(source.contains("Picker(\"Demo 状态\""))
+        XCTAssertFalse(source.contains("Demo 界面壳"))
+        XCTAssertFalse(source.contains("Demo 数值"))
         XCTAssertFalse(source.contains(".glassEffect("), "Dashboard content must not apply glassEffect directly.")
     }
 

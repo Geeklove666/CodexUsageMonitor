@@ -11,7 +11,7 @@
 > [!IMPORTANT]
 > 本项目是独立开发的非官方工具，与 OpenAI 无隶属、授权或背书关系。Codex、ChatGPT 及 OpenAI 是其各自权利人的商标。
 
-当前版本：**2.0.15（Build 47）**  
+当前版本：**2.0.16（Build 48）**  
 系统要求：**macOS 15 Sequoia 至 macOS 27 测试版**  
 架构：**Apple Silicon（arm64）**
 
@@ -20,7 +20,7 @@
 - 菜单栏实时显示 Codex 主额度剩余比例和重置倒计时；
 - 菜单栏弹窗展示主额度、Credits、使用限制重置次数、今日 Token 与数据来源状态；
 - Credits 剩余额度统一保留两位小数；
-- 完整 Dashboard 提供 Overview、Usage History、Alerts、Data Source、Settings 五个页面；
+- 完整 Dashboard 提供 Overview、Usage History、Alerts、Data Source、Settings 五个页面，并默认展示当前真实监控快照；
 - 支持本机 Codex 登录数据源，优先读取这台 Mac 已登录的 Codex 额度信息；
 - 启用本机 Codex 后可直接从菜单栏刷新本机额度，不会重复打开网页登录流程；
 - 支持应用内 OpenAI 官方页面登录作为回退数据源；

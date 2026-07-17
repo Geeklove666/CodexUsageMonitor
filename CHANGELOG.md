@@ -2,6 +2,19 @@
 
 本项目采用 `主版本.次版本.修订版本` 格式。日期使用 Asia/Shanghai 时区。
 
+## 2.0.16 — 2026-07-17
+
+### 修复
+
+- 完整面板默认改为使用真实 `monitor.snapshot`，不再打开早期 Demo 界面壳；
+- 移除完整面板顶部 `Demo 状态` 选择器、侧边栏 Demo 说明和主卡片 Demo 标记；
+- Overview、数据来源、额度表和告警区域改为展示当前真实快照的来源、额度、Credits 与重置次数；
+- 保留 loading、cached、estimated、offline、unavailable、exhausted 等状态表达，但不再作为 Demo 数据显示。
+
+### 分发
+
+- 版本提升为 2.0.16（Build 48），同步 GitHub。
+
 ## 2.0.15 — 2026-07-17
 
 ### 界面

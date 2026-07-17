@@ -6,7 +6,6 @@ struct DashboardView: View {
     @Bindable var monitor: UsageMonitoringService
     let history: UsageHistoryStore
     @State private var selection: DashboardSection = .overview
-    @State private var scenario: DemoQuotaScenario = .cached
     @State private var chartRange: DemoHistoryRange = .week
     @AppStorage(UsageMonitoringService.refreshIntervalPreferenceKey) private var autoRefreshSeconds = AutoRefreshFrequency.defaultValue.rawValue
     @Environment(\.openWindow) private var openWindow
@@ -44,26 +43,18 @@ struct DashboardView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup {
-            Picker("Demo 状态", selection: $scenario) {
-                ForEach(DemoQuotaScenario.allCases) { scenario in
-                    Text(scenario.label).tag(scenario)
-                }
-            }
-            .pickerStyle(.menu)
-            .help("切换 Demo 数据状态，用于验收 loading、cached、estimated、offline、unavailable、exhausted")
-
             Button { refreshFromDashboard() } label: {
                 Label(monitor.isRefreshing ? "刷新中" : "刷新", systemImage: "arrow.clockwise")
             }
             .disabled(monitor.isRefreshing)
-            .help("刷新真实额度来源，并同步刷新今日 Token；Demo 视图仍保留状态标记")
+            .help("刷新额度来源，并同步刷新今日 Token")
         }
     }
 
     private var sidebarFooter: some View {
         VStack(alignment: .leading, spacing: 8) {
-            StatusBadge(status: scenario.status, isDemo: true)
-            Text("Demo 界面壳 · 真实数据源独立运行")
+            StatusBadge(status: dashboardStatus)
+            Text(monitor.snapshot.sourceDisplayName)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -71,7 +62,7 @@ struct DashboardView: View {
         .liquidGlassSurface(cornerRadius: 12)
         .padding([.horizontal, .bottom], 10)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Demo 数据状态，\(scenario.status.accessibilityText)")
+        .accessibilityLabel("数据状态，\(dashboardStatus.accessibilityText)")
     }
 
     private var pageHeader: some View {
@@ -79,11 +70,11 @@ struct DashboardView: View {
             HStack(alignment: .firstTextBaseline) {
                 headerCopy
                 Spacer(minLength: 24)
-                StatusBadge(status: scenario.status, isDemo: true)
+                StatusBadge(status: dashboardStatus)
             }
             VStack(alignment: .leading, spacing: 10) {
                 headerCopy
-                StatusBadge(status: scenario.status, isDemo: true)
+                StatusBadge(status: dashboardStatus)
             }
         }
     }
@@ -100,7 +91,7 @@ struct DashboardView: View {
 
     @ViewBuilder
     private var content: some View {
-        let snapshot = DemoQuotaSnapshot.make(scenario: scenario)
+        let snapshot = DemoQuotaSnapshot.make(snapshot: monitor.snapshot, status: dashboardStatus, now: monitor.now)
         switch selection {
         case .overview:
             overview(snapshot)
@@ -138,7 +129,7 @@ struct DashboardView: View {
     private func alerts(_ snapshot: DemoQuotaSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             InlineNotice(status: (snapshot.remainingPercent ?? 100) <= 5 ? .exhausted : .cached,
-                         message: "Demo 告警规则使用与额度数据一致的状态语言。")
+                         message: "告警规则使用与额度数据一致的状态语言。")
             ForEach(DemoAlertRule.examples) { rule in
                 AppleCard {
                     HStack(spacing: 14) {
@@ -162,8 +153,8 @@ struct DashboardView: View {
         VStack(alignment: .leading, spacing: 16) {
             AppleCard {
                 VStack(alignment: .leading, spacing: 14) {
-                    SectionHeading(title: "数据来源", subtitle: "Demo 数值不是权威额度。")
-                    InfoRow(title: "额度来源", value: "Demo · OpenAI WebKit 会话模型", symbol: "safari")
+                    SectionHeading(title: "数据来源", subtitle: "当前完整面板使用真实监控快照。")
+                    InfoRow(title: "额度来源", value: monitor.snapshot.sourceDisplayName, symbol: "externaldrive")
                     InfoRow(title: "新鲜度", value: snapshot.status.freshnessText, symbol: "clock")
                     InfoRow(title: "来源状态", value: snapshot.status.label, symbol: snapshot.status.symbol)
                     InfoRow(title: "真实会话", value: webSession.hasLoadedUsagePage ? "OpenAI 页面已加载" : "OpenAI 页面未加载", symbol: "person.crop.circle")
@@ -185,7 +176,7 @@ struct DashboardView: View {
 
             AppleCard {
                 VStack(alignment: .leading, spacing: 12) {
-                    SectionHeading(title: "美区价格基准", subtitle: "用于套餐标记的 Demo 参考。")
+                    SectionHeading(title: "美区价格基准", subtitle: "用于套餐标记的参考。")
                     ForEach(ChatGPTPlan.usBaseline) { plan in
                         PlanPriceRow(plan: plan)
                     }
@@ -222,8 +213,8 @@ struct DashboardView: View {
             }
             AppleCard {
                 VStack(alignment: .leading, spacing: 12) {
-                    SectionHeading(title: "数据完整性", subtitle: "界面不会把 Demo、估算或缓存数据当作实时数据。")
-                    InfoRow(title: "当前模式", value: "Demo · \(snapshot.status.label)", symbol: snapshot.status.symbol)
+                    SectionHeading(title: "数据完整性", subtitle: "界面不会把估算或缓存数据当作实时数据。")
+                    InfoRow(title: "当前模式", value: snapshot.status.label, symbol: snapshot.status.symbol)
                     InfoRow(title: "不可用数值", value: "显示为不可用，不会显示为 0", symbol: "number")
                     Button { openSettings(); NSApp.activate() } label: {
                         Label("打开应用设置", systemImage: "gearshape")
@@ -236,6 +227,26 @@ struct DashboardView: View {
 
     private func refreshFromDashboard() {
         Task { await monitor.refresh() }
+    }
+
+    private var dashboardStatus: DemoDataStatus {
+        switch monitor.status {
+        case .refreshing:
+            return .loading
+        case .live:
+            if (monitor.snapshot.primaryWindow?.remainingPercentage ?? 100) <= 0 { return .exhausted }
+            return .live
+        case .cached:
+            return .cached
+        case .estimated:
+            return .estimated
+        case .needsLogin:
+            return .unavailable
+        case .degraded:
+            return monitor.snapshot.primaryWindow == nil ? .unavailable : .cached
+        case .unavailable:
+            return .unavailable
+        }
     }
 
     private var selectedRefreshFrequency: AutoRefreshFrequency {
@@ -336,12 +347,7 @@ private struct DemoQuotaSummaryCard: View {
     private var primaryCopy: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Text("Demo")
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(.secondary.opacity(0.12), in: Capsule())
-                StatusBadge(status: snapshot.status, isDemo: true)
+                StatusBadge(status: snapshot.status)
             }
             Text(snapshot.planDisplayName)
                 .font(.headline)
@@ -387,7 +393,7 @@ private struct SecondaryAllowanceGrid: View {
                             HStack {
                                 Text(allowance.name).font(.headline)
                                 Spacer()
-                                Text("Demo").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                                StatusBadge(status: allowance.status)
                             }
                             Text(allowance.remainingText)
                                 .font(.title3.monospacedDigit().weight(.semibold))
@@ -416,12 +422,12 @@ private struct UsageTrendSection: View {
             VStack(alignment: .leading, spacing: 14) {
                 ViewThatFits(in: .horizontal) {
                     HStack {
-                        SectionHeading(title: "使用趋势", subtitle: "带重置标记的 Demo 序列。")
+                        SectionHeading(title: "使用趋势", subtitle: "基于当前状态的趋势示意。")
                         Spacer()
                         rangePicker
                     }
                     VStack(alignment: .leading, spacing: 12) {
-                        SectionHeading(title: "使用趋势", subtitle: "带重置标记的 Demo 序列。")
+                        SectionHeading(title: "使用趋势", subtitle: "基于当前状态的趋势示意。")
                         rangePicker
                     }
                 }
@@ -449,9 +455,9 @@ private struct UsageTrendSection: View {
                     }
                 }
                 .frame(height: expanded ? 320 : 220)
-                .accessibilityLabel("Demo 使用趋势")
+                .accessibilityLabel("使用趋势")
                 .accessibilityValue(status.accessibilityText)
-                Text("Demo 趋势：活跃使用会降低剩余额度；重置标记表示服务方定义的新窗口开始。")
+                Text("趋势用于辅助观察当前状态；重置标记表示服务方定义的新窗口开始。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -464,7 +470,7 @@ private struct UsageTrendSection: View {
         }
         .pickerStyle(.segmented)
         .frame(maxWidth: 260)
-        .help("选择 Demo 历史范围")
+        .help("选择历史范围")
     }
 }
 
@@ -499,8 +505,8 @@ private struct ResetAndAlertsSection: View {
         AppleCard {
             VStack(alignment: .leading, spacing: 10) {
                 SectionHeading(title: "启用中的告警")
-                InfoRow(title: "20% 预警", value: (snapshot.remainingPercent ?? 100) <= 20 ? "已触发 · Demo" : "已待命 · Demo", symbol: "exclamationmark.triangle")
-                InfoRow(title: "5% 紧急", value: (snapshot.remainingPercent ?? 100) <= 5 ? "已触发 · Demo" : "已待命 · Demo", symbol: "xmark.octagon")
+                InfoRow(title: "20% 预警", value: (snapshot.remainingPercent ?? 100) <= 20 ? "已触发" : "已待命", symbol: "exclamationmark.triangle")
+                InfoRow(title: "5% 紧急", value: (snapshot.remainingPercent ?? 100) <= 5 ? "已触发" : "已待命", symbol: "xmark.octagon")
             }
         }
     }
@@ -520,7 +526,7 @@ private struct DemoAllowanceTable: View {
     var body: some View {
         AppleCard {
             VStack(alignment: .leading, spacing: 12) {
-                SectionHeading(title: "额度表", subtitle: "Demo 数值始终明确标记。")
+                SectionHeading(title: "额度表", subtitle: "按当前快照中的额度窗口展示。")
                 Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
                     GridRow {
                         Text("额度").foregroundStyle(.secondary)
@@ -535,7 +541,7 @@ private struct DemoAllowanceTable: View {
                             Text(allowance.name).font(.body)
                             Text("\(allowance.usedText) / \(allowance.remainingText)").monospacedDigit()
                             Text(allowance.resetText)
-                            StatusBadge(status: allowance.status, isDemo: true)
+                            StatusBadge(status: allowance.status)
                         }
                         .font(.body)
                     }
@@ -606,17 +612,16 @@ private struct LinearQuotaProgress: View {
 
 private struct StatusBadge: View {
     let status: DemoDataStatus
-    var isDemo: Bool
 
     var body: some View {
-        Label(isDemo ? "Demo · \(status.label)" : status.label, systemImage: status.symbol)
+        Label(status.label, systemImage: status.symbol)
             .font(.caption.weight(.semibold))
             .symbolRenderingMode(.hierarchical)
             .foregroundStyle(status.color)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(status.color.opacity(0.10), in: Capsule())
-            .accessibilityLabel(isDemo ? "Demo 状态，\(status.accessibilityText)" : status.accessibilityText)
+            .accessibilityLabel(status.accessibilityText)
     }
 }
 
@@ -657,7 +662,7 @@ private struct PlanPriceRow: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             Spacer()
-            Text("美区 Demo")
+            Text("美区基准")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
         }
@@ -687,7 +692,7 @@ private enum DashboardSection: String, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .overview: "集中查看额度、重置窗口与数据新鲜度。"
-        case .usageHistory: "带可访问趋势图和表格视图的 Demo 历史。"
+        case .usageHistory: "带可访问趋势图和表格视图的本地历史。"
         case .alerts: "额度变化的阈值与提醒规则。"
         case .dataSource: "来源状态、时间戳与套餐价格上下文。"
         case .settings: "第一版界面的显示与数据完整性偏好。"
@@ -705,39 +710,8 @@ private enum DashboardSection: String, CaseIterable, Identifiable {
     }
 }
 
-private enum DemoQuotaScenario: String, CaseIterable, Identifiable {
-    case loading
-    case cached
-    case estimated
-    case offline
-    case unavailable
-    case exhausted
-
-    var id: Self { self }
-    var label: String {
-        switch self {
-        case .loading: "加载中"
-        case .cached: "缓存"
-        case .estimated: "估算"
-        case .offline: "离线"
-        case .unavailable: "不可用"
-        case .exhausted: "已耗尽"
-        }
-    }
-
-    var status: DemoDataStatus {
-        switch self {
-        case .loading: .loading
-        case .cached: .cached
-        case .estimated: .estimated
-        case .offline: .offline
-        case .unavailable: .unavailable
-        case .exhausted: .exhausted
-        }
-    }
-}
-
 private enum DemoDataStatus: String {
+    case live
     case loading
     case cached
     case estimated
@@ -747,6 +721,7 @@ private enum DemoDataStatus: String {
 
     var label: String {
         switch self {
+        case .live: "数据正常"
         case .loading: "加载中"
         case .cached: "4 分钟前更新"
         case .estimated: "估算"
@@ -758,12 +733,13 @@ private enum DemoDataStatus: String {
 
     var freshnessText: String {
         switch self {
-        case .loading: "正在加载初始 Demo 数据"
+        case .live: "刚刚更新"
+        case .loading: "正在加载初始数据"
         case .cached: "4 分钟前更新"
         case .estimated: "根据本机活动估算"
-        case .offline: "离线 · 显示缓存 Demo 数据"
-        case .unavailable: "没有权威 Demo 来源"
-        case .exhausted: "实时耗尽状态 Demo"
+        case .offline: "离线 · 显示缓存数据"
+        case .unavailable: "没有可用数据来源"
+        case .exhausted: "额度已耗尽"
         }
     }
 
@@ -771,6 +747,7 @@ private enum DemoDataStatus: String {
 
     var symbol: String {
         switch self {
+        case .live: "checkmark.circle.fill"
         case .loading: "arrow.triangle.2.circlepath"
         case .cached: "externaldrive.fill.badge.checkmark"
         case .estimated: "function"
@@ -782,6 +759,7 @@ private enum DemoDataStatus: String {
 
     var color: Color {
         switch self {
+        case .live: AppleUI.success
         case .loading: AppleUI.accent
         case .cached: .secondary
         case .estimated: AppleUI.warning
@@ -793,6 +771,7 @@ private enum DemoDataStatus: String {
 
     var progressColor: Color {
         switch self {
+        case .live: AppleUI.accent
         case .exhausted: AppleUI.danger
         case .estimated, .offline: AppleUI.warning
         case .unavailable: .secondary
@@ -822,52 +801,72 @@ private struct DemoQuotaSnapshot {
         ] + secondaryAllowances
     }
 
-    static func make(scenario: DemoQuotaScenario) -> DemoQuotaSnapshot {
-        switch scenario {
-        case .loading:
-            return DemoQuotaSnapshot(status: .loading, planDisplayName: "Pro 20x · $200/月 · Demo",
-                                     remainingPercent: nil, usedPercent: nil, resetText: "正在读取重置时间",
-                                     statusMessage: "Demo 加载状态保持布局稳定，不隐藏已有区域。",
-                                     dataQualityText: "Demo 加载状态会在数值不可用时保留控件可用性。",
-                                     secondaryAllowances: secondary(status: .loading))
-        case .cached:
-            return DemoQuotaSnapshot(status: .cached, planDisplayName: "Pro 20x · $200/月 · Demo",
-                                     remainingPercent: 72, usedPercent: 28, resetText: "2 小时 18 分后重置",
-                                     statusMessage: "Demo 缓存数据会显示新鲜度，不会伪装成实时数据。",
-                                     dataQualityText: "Demo 数值会明确标记，并把缓存新鲜度放在额度旁边。",
-                                     secondaryAllowances: secondary(status: .cached))
-        case .estimated:
-            return DemoQuotaSnapshot(status: .estimated, planDisplayName: "Plus · $20/月 · Demo",
-                                     remainingPercent: 41, usedPercent: 59, resetText: "预计 6 小时后重置",
-                                     statusMessage: "Demo 估算来自本机活动，不是权威额度。",
-                                     dataQualityText: "估算数值带有估算标识，避免虚构精确度。",
-                                     secondaryAllowances: secondary(status: .estimated))
-        case .offline:
-            return DemoQuotaSnapshot(status: .offline, planDisplayName: "Pro 5x · $100/月 · Demo",
-                                     remainingPercent: 29, usedPercent: 71, resetText: "上次记录：1 小时 05 分后重置",
-                                     statusMessage: "Demo 离线模式保留缓存数值，应用仍可导航。",
-                                     dataQualityText: "离线不会清空最后已知的 Demo 数值，也不会阻断导航。",
-                                     secondaryAllowances: secondary(status: .offline))
-        case .unavailable:
-            return DemoQuotaSnapshot(status: .unavailable, planDisplayName: "Free · $0/月 · Demo",
-                                     remainingPercent: nil, usedPercent: nil, resetText: "重置时间不可用",
-                                     statusMessage: "Demo 来源不可用时不会伪造额度数字。",
-                                     dataQualityText: "缺失数值显示为不可用，而不是 0。",
-                                     secondaryAllowances: secondary(status: .unavailable))
-        case .exhausted:
-            return DemoQuotaSnapshot(status: .exhausted, planDisplayName: "Go · $8/月 · Demo",
-                                     remainingPercent: 0, usedPercent: 100, resetText: "预计 42 分钟后重置",
-                                     statusMessage: "Demo 耗尽状态说明哪些能力不可用，以及预计何时恢复。",
-                                     dataQualityText: "耗尽状态谨慎使用红色，并同时提供图标与文字说明。",
-                                     secondaryAllowances: secondary(status: .exhausted))
-        }
+    static func make(snapshot: CodexUsageSnapshot, status: DemoDataStatus, now: Date) -> DemoQuotaSnapshot {
+        let primary = snapshot.primaryWindow
+        let remaining = primary?.remainingPercentage
+        let resetText = primary?.resetsAt.map { DurationFormatter.short($0.timeIntervalSince(now)) + " 后重置" }
+            ?? primary?.durationDescription
+            ?? "重置时间不可用"
+        let sourcePrefix = snapshot.isEstimated ? "估算" : (snapshot.isCached ? "缓存" : snapshot.sourceDisplayName)
+        return DemoQuotaSnapshot(
+            status: status,
+            planDisplayName: SubscriptionTierFormatter.displayName(snapshot.planName),
+            remainingPercent: remaining,
+            usedPercent: primary?.usedPercentage,
+            resetText: resetText,
+            statusMessage: snapshot.diagnosticMessage ?? "\(sourcePrefix) · \(status.freshnessText)",
+            dataQualityText: dataQualityText(snapshot: snapshot, status: status),
+            secondaryAllowances: secondary(snapshot: snapshot, status: status, now: now)
+        )
     }
 
-    private static func secondary(status: DemoDataStatus) -> [DemoAllowance] {
-        [
-            DemoAllowance(name: "模型突发窗口", remainingPercent: status == .unavailable ? nil : 64, usedPercent: status == .unavailable ? nil : 36, resetText: "5 小时后重置", status: status),
-            DemoAllowance(name: "Credits", remainingPercent: status == .unavailable ? nil : 88, usedPercent: status == .unavailable ? nil : 12, resetText: "月度周期", status: status)
-        ]
+    private static func secondary(snapshot: CodexUsageSnapshot, status: DemoDataStatus, now: Date) -> [DemoAllowance] {
+        var values: [DemoAllowance] = []
+        if let secondary = snapshot.secondaryWindow {
+            values.append(DemoAllowance(
+                name: "其他额度",
+                remainingPercent: secondary.remainingPercentage,
+                usedPercent: secondary.usedPercentage,
+                resetText: secondary.resetsAt.map { DurationFormatter.short($0.timeIntervalSince(now)) + " 后重置" }
+                    ?? secondary.durationDescription
+                    ?? "重置时间不可用",
+                status: status
+            ))
+        }
+        if let credits = snapshot.credits {
+            values.append(DemoAllowance(
+                name: "Credits",
+                remainingPercent: nil,
+                usedPercent: nil,
+                resetText: CreditsDisplay.value(credits),
+                status: status,
+                valueOverride: "剩余 \(CreditsDisplay.value(credits))"
+            ))
+        }
+        if let resetAllowance = snapshot.resetAllowance {
+            values.append(DemoAllowance(
+                name: "使用限额重置",
+                remainingPercent: nil,
+                usedPercent: nil,
+                resetText: "可用 \(resetAllowance.availableCount) 次",
+                status: status,
+                valueOverride: "可用 \(resetAllowance.availableCount) 次"
+            ))
+        }
+        return values
+    }
+
+    private static func dataQualityText(snapshot: CodexUsageSnapshot, status: DemoDataStatus) -> String {
+        if snapshot.isCached { return "当前显示缓存数据，界面会保留来源和新鲜度。" }
+        if snapshot.isEstimated { return "当前显示本地估算，数值会保留估算标识。" }
+        switch status {
+        case .live: return "当前显示真实数据源返回的最新快照。"
+        case .loading: return "正在读取数据，已有快照会暂时保留。"
+        case .unavailable: return "当前没有可用数据，未知值不会显示为 0。"
+        case .exhausted: return "当前额度已耗尽，等待服务方定义的重置窗口。"
+        case .cached, .estimated, .offline:
+            return status.freshnessText
+        }
     }
 }
 
@@ -878,8 +877,9 @@ private struct DemoAllowance: Identifiable {
     let usedPercent: Double?
     let resetText: String
     let status: DemoDataStatus
+    var valueOverride: String?
 
-    var remainingText: String { remainingPercent.map { "剩余 \(Int($0))%" } ?? "不可用" }
+    var remainingText: String { valueOverride ?? remainingPercent.map { "剩余 \(Int($0))%" } ?? "不可用" }
     var usedText: String { usedPercent.map { "已用 \(Int($0))%" } ?? "不可用" }
 }
 
@@ -913,6 +913,7 @@ private struct DemoTrendPoint: Identifiable {
             let raw = reset ? 92 : 92 - Double((index * 6) % 74)
             let adjusted: Double
             switch status {
+            case .live: adjusted = raw
             case .exhausted: adjusted = max(0, raw - 90)
             case .unavailable: adjusted = 0
             case .loading: adjusted = 50
@@ -934,9 +935,9 @@ private struct DemoAlertRule: Identifiable {
     let enabled: Bool
 
     static let examples = [
-        DemoAlertRule(title: "剩余 20% 预警", detail: "Demo · 主额度低于 20% 时提醒。", symbol: "exclamationmark.triangle.fill", color: AppleUI.warning, enabled: true),
-        DemoAlertRule(title: "剩余 5% 紧急提醒", detail: "Demo · 额度耗尽前提醒。", symbol: "xmark.octagon.fill", color: AppleUI.danger, enabled: true),
-        DemoAlertRule(title: "重置完成", detail: "Demo · 服务方定义的重置窗口刷新后提醒。", symbol: "arrow.counterclockwise.circle.fill", color: AppleUI.accent, enabled: false)
+        DemoAlertRule(title: "剩余 20% 预警", detail: "主额度低于 20% 时提醒。", symbol: "exclamationmark.triangle.fill", color: AppleUI.warning, enabled: true),
+        DemoAlertRule(title: "剩余 5% 紧急提醒", detail: "额度耗尽前提醒。", symbol: "xmark.octagon.fill", color: AppleUI.danger, enabled: true),
+        DemoAlertRule(title: "重置完成", detail: "服务方定义的重置窗口刷新后提醒。", symbol: "arrow.counterclockwise.circle.fill", color: AppleUI.accent, enabled: false)
     ]
 }
 
