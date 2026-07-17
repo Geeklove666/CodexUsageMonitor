@@ -17,6 +17,7 @@ final class UsageSnapshotEntity {
     var creditsUnit: String?
     var resetAllowanceData: Data?
     var analyticsData: Data?
+    var accountIdentityData: Data?
     var sourceKindRaw: String
     var isEstimated: Bool
     var isCached: Bool
@@ -33,6 +34,7 @@ final class UsageSnapshotEntity {
         creditsRemaining = snapshot.credits?.remaining; creditsUnit = snapshot.credits?.currencyOrUnit
         resetAllowanceData = snapshot.resetAllowance.flatMap { try? JSONEncoder().encode($0) }
         analyticsData = snapshot.analytics.flatMap { try? JSONEncoder().encode($0) }
+        accountIdentityData = snapshot.accountIdentity.flatMap { try? JSONEncoder().encode($0) }
         sourceKindRaw = snapshot.sourceKind.rawValue
         isEstimated = snapshot.isEstimated; isCached = snapshot.isCached; confidenceRaw = snapshot.confidence.rawValue
         fieldCompleteness = snapshot.fieldCompleteness; self.processActive = processActive
@@ -64,6 +66,7 @@ final class UsageHistoryStore {
                 || abs((last.secondaryRemaining ?? -1) - (snapshot.secondaryWindow?.remainingPercentage ?? -1)) >= 0.5
                 || last.creditsRemaining != snapshot.credits?.remaining
                 || last.restoredResetAllowance?.availableCount != snapshot.resetAllowance?.availableCount
+                || last.restoredAccountIdentity != snapshot.accountIdentity
                 || last.primaryReset != snapshot.primaryWindow?.resetsAt
                 || last.secondaryReset != snapshot.secondaryWindow?.resetsAt
                 || last.sourceKindRaw != snapshot.sourceKind.rawValue
@@ -115,10 +118,11 @@ private extension UsageSnapshotEntity {
             : nil
         let analytics = analyticsData.flatMap { try? JSONDecoder().decode(CodexAnalyticsSnapshot.self, from: $0) }
         let resetAllowance = restoredResetAllowance
+        let accountIdentity = restoredAccountIdentity
         return CodexUsageSnapshot(
             id: id, fetchedAt: fetchedAt, sourceUpdatedAt: sourceUpdatedAt, planName: planName,
             primaryWindow: primary, secondaryWindow: secondary, credits: credits,
-            resetAllowance: resetAllowance, analytics: analytics,
+            resetAllowance: resetAllowance, analytics: analytics, accountIdentity: accountIdentity,
             sourceKind: sourceKind, sourceDisplayName: sourceKind.label,
             confidence: confidence, fieldCompleteness: fieldCompleteness
         )
@@ -126,5 +130,9 @@ private extension UsageSnapshotEntity {
 
     var restoredResetAllowance: UsageResetAllowance? {
         resetAllowanceData.flatMap { try? JSONDecoder().decode(UsageResetAllowance.self, from: $0) }
+    }
+
+    var restoredAccountIdentity: CodexAccountIdentity? {
+        accountIdentityData.flatMap { try? JSONDecoder().decode(CodexAccountIdentity.self, from: $0) }
     }
 }

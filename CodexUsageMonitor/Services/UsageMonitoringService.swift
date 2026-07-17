@@ -16,6 +16,8 @@ final class UsageMonitoringService {
     private let resetDetector = ResetDetectionService()
     private var loopTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
+    private var activeRefreshForceRefresh = false
+    private var refreshGeneration: UInt64 = 0
     private var analyticsTask: Task<Void, Never>?
     private var failures = 0
     private var lastMenuOpenAt: Date?
@@ -36,7 +38,7 @@ final class UsageMonitoringService {
          initialSnapshot: CodexUsageSnapshot = .unavailable) {
         self.repository = repository; self.history = history
         self.realtimeTokenReader = realtimeTokenReader; snapshot = initialSnapshot
-        networkMonitor.onRestored = { [weak self] in Task { @MainActor in await self?.refresh() } }
+        networkMonitor.onRestored = { [weak self] in Task { @MainActor in await self?.refresh(reason: "网络恢复", forceRefresh: false) } }
     }
 
     func start() {
@@ -52,7 +54,7 @@ final class UsageMonitoringService {
 
     private func startLoop(refreshImmediately: Bool) {
         loopTask = Task { [weak self] in
-            if refreshImmediately { await self?.refresh() }
+            if refreshImmediately { await self?.refresh(reason: "启动刷新", forceRefresh: false) }
             while !Task.isCancelled {
                 guard let self else { return }
                 self.now = .now
@@ -63,7 +65,7 @@ final class UsageMonitoringService {
                 let backoff = [0.0, 60, 120, 300, 600, 1800][min(self.failures, 5)]
                 let delay = max(base, backoff) * Double.random(in: 0.95...1.05)
                 try? await Task.sleep(for: .seconds(delay))
-                await self.refresh()
+                await self.refresh(reason: "自动刷新", forceRefresh: false)
             }
         }
     }
@@ -75,23 +77,33 @@ final class UsageMonitoringService {
     func refreshIfStaleForMenuOpen(maxAge: TimeInterval = 120) async {
         noteMenuOpened()
         if shouldRefreshForMenuOpen(maxAge: maxAge) {
-            await refresh(reason: "菜单打开")
+            await refresh(reason: "菜单打开", forceRefresh: false)
         }
     }
 
-    func refresh(reason: String = "手动刷新") async {
+    func refresh(reason: String = "手动刷新", forceRefresh: Bool = true) async {
         if let refreshTask {
+            let existingGeneration = refreshGeneration
+            let existingIsForceRefresh = activeRefreshForceRefresh
             await refreshTask.value
-            return
+            guard forceRefresh, !existingIsForceRefresh else { return }
+            if refreshGeneration == existingGeneration {
+                self.refreshTask = nil
+                activeRefreshForceRefresh = false
+                isRefreshing = false
+            }
         }
         isRefreshing = true
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
+        activeRefreshForceRefresh = forceRefresh
         analyticsTask?.cancel()
         refreshTask = Task { [weak self] in
             guard let self else { return }
             let previous = self.snapshot
             async let realtimeValue = self.realtimeTokenReader.analyticsSnapshot()
             do {
-                var quota = try await self.repository.fetchQuota()
+                var quota = try await self.repository.fetchQuota(forceRefresh: forceRefresh)
                 if let realtime = await realtimeValue { quota = quota.mergingAnalytics(realtime) }
                 self.snapshot = quota
                 self.diagnostic = await self.repository.currentDiagnostic()
@@ -122,8 +134,12 @@ final class UsageMonitoringService {
             }
         }
         await refreshTask?.value
-        refreshTask = nil
-        isRefreshing = false; now = .now
+        if refreshGeneration == generation {
+            refreshTask = nil
+            activeRefreshForceRefresh = false
+            isRefreshing = false
+            now = .now
+        }
     }
 
     private func startAnalyticsEnrichment(for quota: CodexUsageSnapshot) {

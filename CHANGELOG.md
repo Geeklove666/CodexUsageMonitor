@@ -2,6 +2,20 @@
 
 本项目采用 `主版本.次版本.修订版本` 格式。日期使用 Asia/Shanghai 时区。
 
+## 2.0.17 — 2026-07-17
+
+### 改进
+
+- 参考 CodexBar 的 Codex 数据读取策略，增强本机 Codex app-server 原始额度解析；
+- 支持解析 `rateLimitsByLimitId` / `rate_limits_by_limit_id`，当主额度结构不完整时可从子额度补充 Credits 与个人消费限制信息；
+- 快照新增账号身份信息，历史与缓存恢复会保留 normalized email、account id 与套餐标识；
+- 本机 Codex 返回已登录账号或 Credits 但缺少额度窗口时，不再直接判定为读取失败，而是返回部分快照并明确显示不可用字段；
+- 手动刷新继续强制绕过本机短缓存，避免点击刷新仍读旧额度。
+
+### 分发
+
+- 版本提升为 2.0.17（Build 49），同步 GitHub。
+
 ## 2.0.16 — 2026-07-17
 
 ### 修复

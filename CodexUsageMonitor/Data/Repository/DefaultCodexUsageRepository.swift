@@ -30,16 +30,19 @@ actor DefaultCodexUsageRepository {
         self.requestTimeout = requestTimeout; self.analyticsTimeout = analyticsTimeout
     }
 
-    func fetch() async throws -> CodexUsageSnapshot {
-        let quotaSnapshot = try await fetchQuota()
-        let value = await fetchAnalytics(for: quotaSnapshot)
+    func fetch(forceRefresh: Bool = false) async throws -> CodexUsageSnapshot {
+        let quotaSnapshot = try await fetchQuota(forceRefresh: forceRefresh)
+        let value = await fetchAnalytics(for: quotaSnapshot, forceRefresh: false)
         if !value.isCached && !value.isEstimated {
             await cache.update(value)
         }
         return value
     }
 
-    func fetchQuota() async throws -> CodexUsageSnapshot {
+    func fetchQuota(forceRefresh: Bool = false) async throws -> CodexUsageSnapshot {
+        if forceRefresh {
+            await invalidateRefreshCaches()
+        }
         var sources: [any CodexUsageDataSource] = [official]
         if let localCodex { sources.append(localCodex) }
         sources.append(contentsOf: [web, cache, estimate])
@@ -117,7 +120,31 @@ actor DefaultCodexUsageRepository {
         source.sourceKind == .localCodexSession ? .seconds(45) : requestTimeout
     }
 
-    func fetchAnalytics(for snapshot: CodexUsageSnapshot) async -> CodexUsageSnapshot {
+    private func invalidateRefreshCaches() async {
+        var invalidators: [any RefreshCacheInvalidatingDataSource] = []
+        if let invalidating = official as? any RefreshCacheInvalidatingDataSource {
+            invalidators.append(invalidating)
+        }
+        if let invalidating = localCodex as? any RefreshCacheInvalidatingDataSource {
+            invalidators.append(invalidating)
+        }
+        if let invalidating = web as? any RefreshCacheInvalidatingDataSource {
+            invalidators.append(invalidating)
+        }
+        for source in analyticsSources {
+            if let invalidating = source as? any RefreshCacheInvalidatingDataSource {
+                invalidators.append(invalidating)
+            }
+        }
+        for invalidator in invalidators {
+            await invalidator.invalidateRefreshCaches()
+        }
+    }
+
+    func fetchAnalytics(for snapshot: CodexUsageSnapshot, forceRefresh: Bool = false) async -> CodexUsageSnapshot {
+        if forceRefresh {
+            await invalidateRefreshCaches()
+        }
         var combined = snapshot.analytics
         var successfulIdentifiers: [String] = []
         var available: [(Int, any CodexAnalyticsDataSource)] = []
@@ -171,7 +198,7 @@ actor DefaultCodexUsageRepository {
             id: snapshot.id, fetchedAt: snapshot.fetchedAt, sourceUpdatedAt: snapshot.sourceUpdatedAt,
             planName: snapshot.planName, primaryWindow: snapshot.primaryWindow,
             secondaryWindow: snapshot.secondaryWindow, credits: snapshot.credits,
-            resetAllowance: snapshot.resetAllowance, analytics: combined,
+            resetAllowance: snapshot.resetAllowance, analytics: combined, accountIdentity: snapshot.accountIdentity,
             sourceKind: snapshot.sourceKind, sourceDisplayName: snapshot.sourceDisplayName,
             isEstimated: snapshot.isEstimated, isCached: snapshot.isCached,
             confidence: snapshot.confidence, fieldCompleteness: snapshot.fieldCompleteness,

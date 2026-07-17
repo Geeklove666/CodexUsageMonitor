@@ -144,7 +144,7 @@ struct LocalCodexLoginProbe: Sendable {
     }
 }
 
-struct LocalCodexSessionDataSource: CodexUsageDataSource, CodexAnalyticsDataSource {
+struct LocalCodexSessionDataSource: CodexUsageDataSource, CodexAnalyticsDataSource, RefreshCacheInvalidatingDataSource {
     let identifier = "local-codex-session"
     let analyticsIdentifier = "local-codex-account-usage"
     let displayName = "本机 Codex 登录"
@@ -226,6 +226,11 @@ struct LocalCodexSessionDataSource: CodexUsageDataSource, CodexAnalyticsDataSour
             throw LocalCodexSessionError.invalidResponse
         }
     }
+
+    func invalidateRefreshCaches() async {
+        await quotaCache.clear()
+        await accountUsageCache.clear()
+    }
 }
 
 enum LocalCodexQuotaRetryPolicy {
@@ -256,6 +261,11 @@ actor LocalQuotaSnapshotCache {
         self.value = value
         storedAt = now
     }
+
+    func clear() {
+        value = nil
+        storedAt = nil
+    }
 }
 
 actor LocalAccountUsageCache {
@@ -271,6 +281,11 @@ actor LocalAccountUsageCache {
     func store(_ value: Data, now: Date = .now) {
         self.value = value
         fetchedAt = now
+    }
+
+    func clear() {
+        value = nil
+        fetchedAt = nil
     }
 }
 
@@ -501,18 +516,31 @@ struct CodexAppServerRateLimitParser: Sendable {
         }
 
         let limitsResponse = try decoder.decode(RateLimitsResponse.self, from: rateLimitsData)
-        guard let limits = limitsResponse.result?.rateLimits,
-              let primary = makeWindow(limits.primary, kind: .primary) else {
+        guard let result = limitsResponse.result,
+              let limits = result.rateLimits else {
             throw LocalCodexSessionError.invalidResponse
         }
+        let candidates = rateLimitCandidates(primary: limits, byLimitID: result.rateLimitsByLimitId)
+        let primary = candidates.lazy.compactMap { makeWindow($0.primary, kind: .primary) }.first
         let secondary = makeWindow(limits.secondary, kind: .secondary)
-        let credits = makeCredits(limits.credits)
+            ?? candidates.dropFirst().lazy.compactMap { makeWindow($0.secondary, kind: .secondary) }.first
+        let credits = candidates.lazy.compactMap { makeCredits($0.credits) }.first
         let resetAllowance = makeResetAllowance(limitsResponse.result?.rateLimitResetCredits)
-        let planName = account.planType ?? limits.planType
+        let planName = account.planType ?? candidates.lazy.compactMap(\.planType).first
+        let accountIdentity = CodexAccountIdentity(
+            email: account.email,
+            accountID: account.accountID,
+            planName: planName
+        )
+        guard primary != nil || secondary != nil || credits != nil || accountIdentity.hasAnyValue else {
+            throw LocalCodexSessionError.invalidResponse
+        }
         let completeness = min(1, 0.25 + (secondary == nil ? 0 : 0.2) + (planName == nil ? 0 : 0.2)
             + (credits == nil ? 0 : 0.15) + (resetAllowance == nil ? 0 : 0.1))
+        let individualLimit = candidates.lazy.compactMap(\.individualLimit).first
         let details = [limits.limitName, limits.rateLimitReachedType,
-                       limits.individualLimit.map { "个人消费限制剩余 \($0.remainingPercent)%" },
+                       individualLimit?.remainingPercent.map { "个人消费限制剩余 \(Int($0.rounded()))%" },
+                       result.rateLimitsByLimitId.map { "子额度 \($0.count) 项" },
                        resetAllowance.map { "使用限额重置可用 \($0.availableCount) 次" }]
             .compactMap { $0 }.joined(separator: " · ")
 
@@ -523,13 +551,20 @@ struct CodexAppServerRateLimitParser: Sendable {
             secondaryWindow: secondary,
             credits: credits,
             resetAllowance: resetAllowance,
+            accountIdentity: accountIdentity,
             sourceKind: .localCodexSession,
             sourceDisplayName: "本机 Codex 登录",
-            confidence: .verified,
+            confidence: primary == nil && secondary == nil ? .medium : .verified,
             fieldCompleteness: completeness,
             expiresAt: now.addingTimeInterval(300),
             diagnosticMessage: details.isEmpty ? "经用户授权使用本机 Codex 登录读取额度；应用未读取或保存 Token" : details
         )
+    }
+
+    private func rateLimitCandidates(primary: RateLimitsValue, byLimitID: [String: RateLimitsValue]?) -> [RateLimitsValue] {
+        [primary] + (byLimitID?.values.sorted {
+            ($0.limitName ?? $0.limitId ?? "") < ($1.limitName ?? $1.limitId ?? "")
+        } ?? [])
     }
 
     private func makeCredits(_ value: CreditsSnapshot?) -> CreditsUsage? {
@@ -628,7 +663,41 @@ private struct AccountResult: Decodable {
 
 private struct LocalCodexAccount: Decodable {
     let type: String
+    let email: String?
+    let accountID: String?
     let planType: String?
+
+    enum CodingKeys: String, CodingKey {
+        case type, email, planType
+        case accountID
+        case accountId
+        case accountIDSnake = "account_id"
+        case providerAccountID
+        case providerAccountIDSnake = "provider_account_id"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        type = try container.decode(String.self, forKey: .type)
+        email = try? container.decodeIfPresent(String.self, forKey: .email)
+        planType = try? container.decodeIfPresent(String.self, forKey: .planType)
+        accountID = Self.firstString(
+            in: container,
+            keys: [.accountID, .accountId, .accountIDSnake, .providerAccountID, .providerAccountIDSnake]
+        )
+    }
+
+    private static func firstString(
+        in container: KeyedDecodingContainer<CodingKeys>,
+        keys: [CodingKeys]
+    ) -> String? {
+        for key in keys {
+            if let value = try? container.decodeIfPresent(String.self, forKey: key) {
+                return value
+            }
+        }
+        return nil
+    }
 }
 
 private struct RateLimitsResponse: Decodable {
@@ -637,7 +706,23 @@ private struct RateLimitsResponse: Decodable {
 
 private struct RateLimitsResult: Decodable {
     let rateLimits: RateLimitsValue?
+    let rateLimitsByLimitId: [String: RateLimitsValue]?
     let rateLimitResetCredits: ResetCreditsSnapshot?
+
+    enum CodingKeys: String, CodingKey {
+        case rateLimits
+        case rateLimitsByLimitId
+        case rateLimitsByLimitIdSnake = "rate_limits_by_limit_id"
+        case rateLimitResetCredits
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        rateLimits = try? container.decodeIfPresent(RateLimitsValue.self, forKey: .rateLimits)
+        rateLimitsByLimitId = (try? container.decodeIfPresent([String: RateLimitsValue].self, forKey: .rateLimitsByLimitId))
+            ?? (try? container.decodeIfPresent([String: RateLimitsValue].self, forKey: .rateLimitsByLimitIdSnake))
+        rateLimitResetCredits = try? container.decodeIfPresent(ResetCreditsSnapshot.self, forKey: .rateLimitResetCredits)
+    }
 }
 
 private struct ResetCreditsSnapshot: Decodable {
@@ -662,6 +747,37 @@ private struct RateLimitsValue: Decodable {
     let limitName: String?
     let planType: String?
     let rateLimitReachedType: String?
+
+    enum CodingKeys: String, CodingKey {
+        case primary, secondary, credits
+        case individualLimit
+        case individualLimitSnake = "individual_limit"
+        case limitId
+        case limitIdSnake = "limit_id"
+        case limitName
+        case limitNameSnake = "limit_name"
+        case planType
+        case planTypeSnake = "plan_type"
+        case rateLimitReachedType
+        case rateLimitReachedTypeSnake = "rate_limit_reached_type"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        primary = try? container.decodeIfPresent(RateWindow.self, forKey: .primary)
+        secondary = try? container.decodeIfPresent(RateWindow.self, forKey: .secondary)
+        credits = try? container.decodeIfPresent(CreditsSnapshot.self, forKey: .credits)
+        individualLimit = (try? container.decodeIfPresent(SpendControlLimitSnapshot.self, forKey: .individualLimit))
+            ?? (try? container.decodeIfPresent(SpendControlLimitSnapshot.self, forKey: .individualLimitSnake))
+        limitId = (try? container.decodeIfPresent(String.self, forKey: .limitId))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .limitIdSnake))
+        limitName = (try? container.decodeIfPresent(String.self, forKey: .limitName))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .limitNameSnake))
+        planType = (try? container.decodeIfPresent(String.self, forKey: .planType))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .planTypeSnake))
+        rateLimitReachedType = (try? container.decodeIfPresent(String.self, forKey: .rateLimitReachedType))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .rateLimitReachedTypeSnake))
+    }
 }
 
 private struct CreditsSnapshot: Decodable {
@@ -671,10 +787,35 @@ private struct CreditsSnapshot: Decodable {
 }
 
 private struct SpendControlLimitSnapshot: Decodable {
-    let limit: String
-    let remainingPercent: Int
-    let resetsAt: Int64
-    let used: String
+    let limit: Double?
+    let remainingPercent: Double?
+    let resetsAt: Int64?
+    let used: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case limit
+        case remainingPercent
+        case remainingPercentSnake = "remaining_percent"
+        case resetsAt
+        case resetsAtSnake = "resets_at"
+        case used
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        limit = Self.decodeDouble(container, .limit)
+        remainingPercent = Self.decodeDouble(container, .remainingPercent)
+            ?? Self.decodeDouble(container, .remainingPercentSnake)
+        resetsAt = (try? container.decodeIfPresent(Int64.self, forKey: .resetsAt))
+            ?? (try? container.decodeIfPresent(Int64.self, forKey: .resetsAtSnake))
+        used = Self.decodeDouble(container, .used)
+    }
+
+    private static func decodeDouble(_ container: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys) -> Double? {
+        if let value = try? container.decodeIfPresent(Double.self, forKey: key) { return value }
+        if let value = try? container.decodeIfPresent(String.self, forKey: key) { return Double(value) }
+        return nil
+    }
 }
 
 private struct RateWindow: Decodable {

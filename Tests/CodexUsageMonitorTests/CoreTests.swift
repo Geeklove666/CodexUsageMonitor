@@ -206,6 +206,7 @@ final class LocalCodexSessionParserTests: XCTestCase {
         XCTAssertEqual(snapshot.sourceKind, .localCodexSession)
         XCTAssertEqual(snapshot.sourceDisplayName, "本机 Codex 登录")
         XCTAssertEqual(snapshot.planName, "pro_20x")
+        XCTAssertEqual(snapshot.accountIdentity?.planName, "pro_20x")
         XCTAssertEqual(snapshot.primaryWindow?.remainingPercentage, 75)
         XCTAssertEqual(snapshot.secondaryWindow?.remainingPercentage, 90)
         XCTAssertEqual(snapshot.credits?.remaining, Decimal(2500))
@@ -230,6 +231,41 @@ final class LocalCodexSessionParserTests: XCTestCase {
         XCTAssertEqual(snapshot.credits?.remaining, Decimal(string: "2184.4377075000"))
         XCTAssertEqual(snapshot.resetAllowance?.availableCount, 1)
         XCTAssertEqual(snapshot.resetAllowance?.credits, [])
+    }
+
+    func testAppServerRateLimitsUsesLimitIdFallbackForCredits() throws {
+        let reset = Int(Date.now.addingTimeInterval(3_600).timeIntervalSince1970)
+        let account = """
+        {"id":2,"result":{"account":{"type":"chatgpt","email":"USER@Example.COM","planType":"pro_20x","provider_account_id":"acct_123"}}}
+        """.data(using: .utf8)!
+        let limits = """
+        {"id":3,"result":{"rateLimits":{"primary":{"usedPercent":40,"windowDurationMins":300,"resetsAt":\(reset)},"plan_type":"pro_20x"},"rate_limits_by_limit_id":{"credits":{"limit_name":"Credit balance","credits":{"hasCredits":true,"unlimited":false,"balance":"123.4567"},"individual_limit":{"limit":2500,"used":100,"remaining_percent":96,"resets_at":\(reset)}}}}}
+        """.data(using: .utf8)!
+
+        let snapshot = try CodexAppServerRateLimitParser().parse(account: account, rateLimits: limits)
+
+        XCTAssertEqual(snapshot.accountIdentity?.email, "user@example.com")
+        XCTAssertEqual(snapshot.accountIdentity?.accountID, "acct_123")
+        XCTAssertEqual(snapshot.planName, "pro_20x")
+        XCTAssertEqual(snapshot.credits?.remaining, Decimal(string: "123.4567"))
+        XCTAssertTrue(snapshot.diagnosticMessage?.contains("子额度 1 项") == true)
+        XCTAssertTrue(snapshot.diagnosticMessage?.contains("个人消费限制剩余 96%") == true)
+    }
+
+    func testAppServerRateLimitsReturnsPartialSnapshotWhenOnlyIdentityAndCreditsExist() throws {
+        let account = """
+        {"id":2,"result":{"account":{"type":"chatgpt","email":"user@example.com","planType":"plus"}}}
+        """.data(using: .utf8)!
+        let limits = """
+        {"id":3,"result":{"rateLimits":{"credits":{"hasCredits":true,"unlimited":false,"balance":"50.25"},"planType":"plus"}}}
+        """.data(using: .utf8)!
+
+        let snapshot = try CodexAppServerRateLimitParser().parse(account: account, rateLimits: limits)
+
+        XCTAssertNil(snapshot.primaryWindow)
+        XCTAssertEqual(snapshot.credits?.remaining, Decimal(string: "50.25"))
+        XCTAssertEqual(snapshot.accountIdentity?.email, "user@example.com")
+        XCTAssertEqual(snapshot.confidence, .medium)
     }
 }
 
@@ -548,6 +584,25 @@ actor CountingAnalyticsDataSource: CodexAnalyticsDataSource {
     }
 }
 
+actor CacheInvalidatingStubDataSource: CodexUsageDataSource, RefreshCacheInvalidatingDataSource {
+    let identifier: String
+    let displayName: String
+    let sourceKind: UsageSourceKind
+    let result: Result<CodexUsageSnapshot, Error>
+    private(set) var invalidationCount = 0
+
+    init(_ id: String, kind: UsageSourceKind, result: Result<CodexUsageSnapshot, Error>) {
+        identifier = id
+        displayName = id
+        sourceKind = kind
+        self.result = result
+    }
+
+    func availability() async -> DataSourceAvailability { .available }
+    func fetchUsage() async throws -> CodexUsageSnapshot { try result.get() }
+    func invalidateRefreshCaches() async { invalidationCount += 1 }
+}
+
 actor DelayedDataSource: CodexUsageDataSource {
     let identifier = "delayed"
     let displayName = "delayed"
@@ -639,6 +694,44 @@ final class RepositoryTests: XCTestCase {
         _ = await repository.fetchAnalytics(for: quota)
         let countAfterAnalytics = await counter.fetchCount
         XCTAssertEqual(countAfterAnalytics, 1)
+    }
+
+    func testManualQuotaFetchInvalidatesRefreshCaches() async throws {
+        let local = CacheInvalidatingStubDataSource(
+            "local", kind: .localCodexSession, result: .success(value(.localCodexSession))
+        )
+        let unavailable = StubDataSource(
+            "unavailable", kind: .verifiedOfficial, state: .unavailable("no"),
+            result: .failure(UsageMonitorError.noAvailableDataSource)
+        )
+        let repository = DefaultCodexUsageRepository(
+            official: unavailable, localCodex: local,
+            web: unavailable, cache: CachedSnapshotDataSource(), estimate: LocalEstimateDataSource()
+        )
+
+        _ = try await repository.fetchQuota(forceRefresh: true)
+
+        let invalidationCount = await local.invalidationCount
+        XCTAssertEqual(invalidationCount, 1)
+    }
+
+    func testAutomaticQuotaFetchDoesNotInvalidateRefreshCaches() async throws {
+        let local = CacheInvalidatingStubDataSource(
+            "local", kind: .localCodexSession, result: .success(value(.localCodexSession))
+        )
+        let unavailable = StubDataSource(
+            "unavailable", kind: .verifiedOfficial, state: .unavailable("no"),
+            result: .failure(UsageMonitorError.noAvailableDataSource)
+        )
+        let repository = DefaultCodexUsageRepository(
+            official: unavailable, localCodex: local,
+            web: unavailable, cache: CachedSnapshotDataSource(), estimate: LocalEstimateDataSource()
+        )
+
+        _ = try await repository.fetchQuota(forceRefresh: false)
+
+        let invalidationCount = await local.invalidationCount
+        XCTAssertEqual(invalidationCount, 0)
     }
 
     func testRequestTimeoutIsBoundedAndReported() async {

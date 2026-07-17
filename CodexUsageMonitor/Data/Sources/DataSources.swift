@@ -29,6 +29,7 @@ actor CachedSnapshotDataSource: CodexUsageDataSource {
         return CodexUsageSnapshot(fetchedAt: snapshot.fetchedAt, sourceUpdatedAt: snapshot.sourceUpdatedAt,
             planName: snapshot.planName, primaryWindow: snapshot.primaryWindow, secondaryWindow: snapshot.secondaryWindow,
             credits: snapshot.credits, resetAllowance: snapshot.resetAllowance, analytics: snapshot.analytics,
+            accountIdentity: snapshot.accountIdentity,
             sourceKind: .cachedSnapshot, sourceDisplayName: "最近一次有效快照",
             isEstimated: false, isCached: true, confidence: age < 900 ? .medium : .low,
             fieldCompleteness: snapshot.fieldCompleteness, expiresAt: snapshot.expiresAt,

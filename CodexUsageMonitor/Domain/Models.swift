@@ -41,6 +41,35 @@ struct CreditsUsage: Sendable, Codable, Equatable {
     let expiresAt: Date?
 }
 
+struct CodexAccountIdentity: Sendable, Codable, Equatable {
+    let email: String?
+    let accountID: String?
+    let planName: String?
+
+    init(email: String? = nil, accountID: String? = nil, planName: String? = nil) {
+        self.email = Self.normalized(email)
+        self.accountID = Self.normalized(accountID)
+        self.planName = Self.normalized(planName)
+    }
+
+    var hasAnyValue: Bool {
+        email != nil || accountID != nil || planName != nil
+    }
+
+    func matches(_ other: CodexAccountIdentity?) -> Bool {
+        guard let other else { return false }
+        if let email, let otherEmail = other.email { return email == otherEmail }
+        if let accountID, let otherAccountID = other.accountID { return accountID == otherAccountID }
+        return false
+    }
+
+    private static func normalized(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let trimmed, !trimmed.isEmpty, trimmed.lowercased() != "unknown" else { return nil }
+        return trimmed.lowercased()
+    }
+}
+
 struct UsageResetCredit: Sendable, Codable, Equatable {
     let resetType: String?
     let status: String?
@@ -73,6 +102,7 @@ struct CodexUsageSnapshot: Identifiable, Sendable, Codable, Equatable {
     let credits: CreditsUsage?
     let resetAllowance: UsageResetAllowance?
     let analytics: CodexAnalyticsSnapshot?
+    let accountIdentity: CodexAccountIdentity?
     let sourceKind: UsageSourceKind
     let sourceDisplayName: String
     let isEstimated: Bool
@@ -85,11 +115,13 @@ struct CodexUsageSnapshot: Identifiable, Sendable, Codable, Equatable {
     init(id: UUID = UUID(), fetchedAt: Date = .now, sourceUpdatedAt: Date? = nil, planName: String? = nil,
          primaryWindow: UsageLimitWindow? = nil, secondaryWindow: UsageLimitWindow? = nil, credits: CreditsUsage? = nil,
          resetAllowance: UsageResetAllowance? = nil, analytics: CodexAnalyticsSnapshot? = nil,
+         accountIdentity: CodexAccountIdentity? = nil,
          sourceKind: UsageSourceKind, sourceDisplayName: String, isEstimated: Bool = false, isCached: Bool = false,
          confidence: UsageConfidence, fieldCompleteness: Double, expiresAt: Date? = nil, diagnosticMessage: String? = nil) {
         self.id = id; self.fetchedAt = fetchedAt; self.sourceUpdatedAt = sourceUpdatedAt; self.planName = planName
         self.primaryWindow = primaryWindow; self.secondaryWindow = secondaryWindow; self.credits = credits
         self.resetAllowance = resetAllowance; self.analytics = analytics
+        self.accountIdentity = accountIdentity?.hasAnyValue == true ? accountIdentity : nil
         self.sourceKind = sourceKind; self.sourceDisplayName = sourceDisplayName; self.isEstimated = isEstimated
         self.isCached = isCached; self.confidence = confidence; self.fieldCompleteness = min(1, max(0, fieldCompleteness))
         self.expiresAt = expiresAt; self.diagnosticMessage = diagnosticMessage
@@ -102,6 +134,7 @@ struct CodexUsageSnapshot: Identifiable, Sendable, Codable, Equatable {
             id: id, fetchedAt: fetchedAt, sourceUpdatedAt: sourceUpdatedAt, planName: planName,
             primaryWindow: primaryWindow, secondaryWindow: secondaryWindow, credits: credits,
             resetAllowance: resetAllowance, analytics: analytics?.merging(value) ?? value,
+            accountIdentity: accountIdentity,
             sourceKind: sourceKind, sourceDisplayName: sourceDisplayName,
             isEstimated: isEstimated, isCached: isCached, confidence: confidence,
             fieldCompleteness: fieldCompleteness, expiresAt: expiresAt,

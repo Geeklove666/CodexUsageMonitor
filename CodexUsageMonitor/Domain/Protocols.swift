@@ -20,6 +20,10 @@ protocol CodexAnalyticsDataSource: Sendable {
 
 extension CodexAnalyticsDataSource { var analyticsParserVersion: String? { nil } }
 
+protocol RefreshCacheInvalidatingDataSource: Sendable {
+    func invalidateRefreshCaches() async
+}
+
 protocol CodexUsageParser: Sendable {
     var parserVersion: String { get }
     func parse(payload: Data, response: URLResponse?) throws -> ParsedCodexUsage
