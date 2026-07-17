@@ -54,7 +54,7 @@ struct CompactUsageSummary: View {
     let now: Date
 
     var body: some View {
-        AppleCard(padding: 12, cornerRadius: 16, shadowRadius: 12, shadowY: 3, material: .regularMaterial) {
+        AppleCard(padding: 12, cornerRadius: 16, shadowRadius: 12, shadowY: 3, material: nil) {
             HStack(spacing: 12) {
                 UsageRing(
                     percentage: snapshot.primaryWindow?.remainingPercentage,
@@ -239,173 +239,13 @@ struct MonitoringStatusBar: View {
     }
 }
 
-struct UsageHeroCard: View {
-    let snapshot: CodexUsageSnapshot
-    let now: Date
-
-    var body: some View {
-        AppleCard(cornerRadius: AppleUI.heroRadius, shadowRadius: 18, shadowY: 5, material: .regularMaterial) {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 24) {
-                    heroMetric.frame(minWidth: 300)
-                    summaryTiles
-                }
-                VStack(alignment: .leading, spacing: 18) {
-                    heroMetric
-                    summaryTiles
-                }
-            }
-        }
-    }
-
-    private var heroMetric: some View {
-        HStack(spacing: 18) {
-            UsageRing(
-                percentage: snapshot.primaryWindow?.remainingPercentage,
-                warning: (snapshot.primaryWindow?.remainingPercentage ?? 101) <= 20,
-                lineWidth: 12,
-                showsValue: true,
-                isEstimated: snapshot.isEstimated
-            )
-            .frame(width: 140, height: 140)
-            VStack(alignment: .leading, spacing: 7) {
-                Text("主额度").font(.title3.weight(.semibold))
-                Text(usedDescription).font(.body.monospacedDigit().weight(.medium))
-                Text(resetDescription(snapshot.primaryWindow)).font(.subheadline).foregroundStyle(.secondary)
-                if let duration = snapshot.primaryWindow?.durationDescription {
-                    Label(duration, systemImage: "clock").font(.caption).foregroundStyle(.tertiary)
-                }
-            }
-        }
-    }
-
-    private var summaryTiles: some View {
-        Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 14) {
-            if let secondary = snapshot.secondaryWindow {
-                HeroSupplementaryMetric(title: "次级额度", value: percent(secondary.remainingPercentage), detail: "剩余", symbol: "calendar.badge.clock", color: AppleUI.purple)
-            }
-            if snapshot.credits != nil {
-                Divider().opacity(0.25)
-                HeroSupplementaryMetric(title: "Credits", value: CreditsDisplay.value(snapshot.credits), detail: CreditsDisplay.detail(snapshot.credits), symbol: "sparkles", color: AppleUI.purple)
-            }
-            if let allowance = snapshot.resetAllowance {
-                Divider().opacity(0.25)
-                HeroSupplementaryMetric(
-                    title: "使用限额重置",
-                    value: allowance.availableCount > 0 ? "可用 \(allowance.availableCount) 次" : "暂无可用",
-                    detail: resetAllowanceDetail(allowance),
-                    symbol: "arrow.counterclockwise.circle.fill",
-                    color: allowance.availableCount > 0 ? AppleUI.success : .secondary
-                )
-            }
-            if snapshot.secondaryWindow == nil && snapshot.credits == nil && snapshot.resetAllowance == nil {
-                HeroSupplementaryMetric(title: "其他额度", value: "--", detail: "当前数据源未提供", symbol: "ellipsis.circle", color: .secondary)
-            }
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    private func percent(_ value: Double?) -> String {
-        value.map { "\(snapshot.isEstimated ? "≈" : "")\(Int($0))%" } ?? "--"
-    }
-
-    private var primaryQuotaColor: Color {
-        snapshot.primaryWindow?.remainingPercentage
-            .map { MenuBarQuotaLevel(remainingPercentage: $0).color } ?? AppleUI.accent
-    }
-
-    private var usedDescription: String {
-        guard let used = snapshot.primaryWindow?.usedPercentage else { return "已使用 --" }
-        return "已使用 \(snapshot.isEstimated ? "≈" : "")\(Int(used))%"
-    }
-
-    private func resetDescription(_ window: UsageLimitWindow?) -> String {
-        guard let reset = window?.resetsAt else { return "重置时间暂无数据" }
-        return reset > now ? "\(DurationFormatter.short(reset.timeIntervalSince(now))) 后重置" : "等待额度重置"
-    }
-
-    private func resetAllowanceDetail(_ allowance: UsageResetAllowance) -> String {
-        guard let expiration = allowance.credits.compactMap(\.expiresAt).filter({ $0 > now }).min() else {
-            return "由当前数据源返回"
-        }
-        return "最近一次将在 \(DurationFormatter.short(expiration.timeIntervalSince(now))) 后到期"
-    }
-}
-
-struct UsageMetricTile: View {
-    let title: String
-    let value: String
-    let detail: String
-    let symbol: String
-    let color: Color
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                SymbolTile(symbol: symbol, color: color)
-                Spacer()
-                Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            }
-            Text(value).font(.title3.monospacedDigit().weight(.semibold)).lineLimit(1).minimumScaleFactor(0.75)
-            Text(detail).font(.caption).foregroundStyle(.tertiary).lineLimit(1)
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, minHeight: 96, alignment: .leading)
-        .background(.primary.opacity(0.032), in: RoundedRectangle(cornerRadius: AppleUI.smallRadius, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: AppleUI.smallRadius, style: .continuous)
-                .strokeBorder(.primary.opacity(0.045), lineWidth: 0.6)
-        }
-        .accessibilityElement(children: .combine)
-    }
-}
-
-private struct HeroSupplementaryMetric: View {
-    let title: String
-    let value: String
-    let detail: String
-    let symbol: String
-    let color: Color
-
-    var body: some View {
-        HStack(spacing: 12) {
-            SymbolTile(symbol: symbol, color: color)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.subheadline.weight(.medium)).foregroundStyle(.secondary)
-                Text(detail).font(.caption).foregroundStyle(.tertiary)
-            }
-            Spacer(minLength: 16)
-            Text(value).font(.title3.monospacedDigit().weight(.semibold))
-        }
-        .accessibilityElement(children: .combine)
-    }
-}
-
-struct DashboardAdaptiveColumns<Leading: View, Trailing: View>: View {
-    @ViewBuilder let leading: Leading
-    @ViewBuilder let trailing: Trailing
-
-    var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .top, spacing: 18) {
-                leading.frame(minWidth: 400, maxWidth: .infinity)
-                trailing.frame(minWidth: 230, idealWidth: 280, maxWidth: 320)
-            }
-            VStack(spacing: 18) {
-                leading
-                trailing
-            }
-        }
-    }
-}
-
 enum CreditsDisplay {
     static func value(_ credits: CreditsUsage?) -> String {
         switch credits?.currencyOrUnit {
         case "无限": return "无限"
         case "Unlimited": return "无限"
         case "Unavailable": return "未启用"
-        default: return credits?.remaining.map { String(describing: $0) } ?? "--"
+        default: return credits?.remaining.map { decimalFormatter.string(from: $0 as NSDecimalNumber) ?? String(describing: $0) } ?? "--"
         }
     }
 
@@ -415,4 +255,13 @@ enum CreditsDisplay {
         if credits.currencyOrUnit == "Unavailable" { return "账户未启用" }
         return credits.currencyOrUnit ?? "Credits"
     }
+
+    private static let decimalFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 0
+        formatter.maximumFractionDigits = 0
+        formatter.usesGroupingSeparator = false
+        return formatter
+    }()
 }

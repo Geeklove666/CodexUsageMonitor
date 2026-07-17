@@ -1,6 +1,6 @@
 # 构建与测试记录
 
-日期：2026-07-16
+日期：2026-07-17
 
 ## 工具链
 
@@ -10,16 +10,15 @@
 - Swift 6.4
 - 项目使用 Swift Package；命令显式设置 `DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer`
 
-## App 构建
+## 2.0.16 发布构建
 
 执行：
 
 ```bash
-DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift package clean
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift build
 ```
 
-最终结果：成功，0 个错误。当前版本为 1.8.7（Build 30），最低部署版本 macOS 14。Xcode 27 beta 在构建 Universal 2 时提示 `x86_64` 对 macOS 27 部署目标已弃用；最终二进制仍同时包含 `arm64` 与 `x86_64`，其 `LC_BUILD_VERSION` 最低版本为 14.0。
+最终结果：成功，0 个错误。当前版本为 2.0.16（Build 48），最低部署版本 macOS 15.0。产品包只面向 Apple Silicon，正式打包脚本使用 `--arch arm64`，并验证最终二进制只包含 `arm64`。
 
 ## XCTest
 
@@ -29,22 +28,33 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift build
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test
 ```
 
-最终结果：67 个 XCTest 全部通过，0 个失败、0 个未执行。覆盖 WebView 注入脚本、今日 Token、app-server Credits/个人消费限制、字段来源合并、额度短缓存、授权恢复路由、缓存刷新状态、Analytics 缓存恢复，以及设计系统不再应用缩放变换的回归。原先未被主程序依赖的重复 `Core` Package 已移除。
+最终结果：64 个 XCTest 全部通过，0 个失败、0 个未执行。覆盖 WebView 注入脚本、今日 Token、官方页面额度来源、本机 Codex app-server 额度解析、字段来源合并、缓存刷新状态、Analytics 缓存恢复、自动刷新频率、真实刷新诊断、Credits 两位小数显示、本机 Codex 空 reset credits 兼容、菜单按钮不重复启动登录流程、菜单栏标题使用系统默认颜色、Dashboard 默认使用真实监控快照，以及设计系统不再应用缩放变换的回归。
+
+## 数据源调整
+
+2.0.1 重新加入用户授权的“本机 Codex 登录”额度读取链路。实现会先用 stable 的 `codex login status` 检查本机登录，再调用 OpenAI 签名的本机 `codex app-server --stdio` 读取额度；由于 app-server 官方成熟度仍为 Experimental，它只作为可选优先源，失败时继续回退到 App 内隔离的 OpenAI 官方 WebKit 会话、缓存与估算。本机 Token 统计仍为单独授权的本地读取能力。2.0.14 兼容 `rateLimitResetCredits.credits: null` 的真实返回结构，并把本机 Codex 额度读取超时单独放宽至 45 秒。
+
+## UI 调整
+
+界面按 Apple's Liquid Glass Design 重新整理：macOS 26 及以上使用原生 Liquid Glass 效果，macOS 15 使用系统 Material 降级方案。按钮按压态只改变透明度和填充，不再使用放大缩放，避免点击整块面板被放大的问题。2.0.2 进一步移除“更新今日 Token”独立按钮，改由“刷新”同步刷新额度和今日 Token；完整面板改为中文导航与中文 Demo 文案。2.0.3 移除“完整面板”按钮的大面积蓝色 tint，改为中性 Liquid Glass 控件。2.0.4 将菜单展开面板改为更接近 Apple popover 的大连续圆角、系统材质与柔和描边，并取消刷新时自动弹出网页登录窗口。2.0.9 移除菜单栏展开面板背后的自定义半透明 Material 遮罩。2.0.10 将 MenuBarExtra 宿主 NSWindow 配置为透明、非 opaque、无系统窗口阴影，并清理 NSHostingView / contentView 背景；菜单根 View 只绘制一个与实际内容尺寸一致的圆角主面板，圆角外透明。2.0.11 在完整面板和设置页加入 1/5/10 分钟自动刷新频率，并将刷新调度收敛为单一可见配置。2.0.12 新增智能刷新、菜单打开按需刷新和完整面板真实刷新诊断。2.0.13 将菜单栏弹窗宿主从 SwiftUI MenuBarExtra 切换为自建透明 NSPanel，避免系统宿主窗口在圆角外绘制额外背景。2.0.6 曾将设置页数据源区域改为电池充电绿；2.0.7 已取消该填充色，改为中性 Liquid Glass 操作按钮。
 
 ## 启动冒烟测试
 
-执行 Debug 可执行文件后等待 5 秒。进程保持运行，无 stdout/stderr 错误，证明 SwiftUI 菜单栏应用完成启动且未立即崩溃。
+本地安装到 `/Applications/Codex Usage Monitor.app` 后启动成功，进程保持运行，没有立即崩溃。该测试验证的是本机可启动，不等同于跨 Mac 可分发签名验证。
 
-## 1.8.7 DMG
+## 2.0.16 本机测试 DMG
 
-- 文件：`Codex-Usage-Monitor-1.8.7-universal.dmg`；
-- 架构：`arm64`、`x86_64`；
-- 最低 macOS：14.0；
-- 签名：ad-hoc，仅供开发测试；
-- SHA-256：`a79ba50ed3506d6d26b77e07f0d5404c8e1b612d67d20994ade2184a9aa1f0fa`。
+- 文件：`Codex-Usage-Monitor-2.0.16-local-test-apple-silicon.dmg`；
+- 架构：`arm64`；
+- 最低 macOS：15.0；
+- 签名：ad-hoc，仅供本机开发测试，不能作为跨 Mac 分享版；
+- Apple 公证票据：无；
+- SHA-256：`e9d558973f758f340ce0ab53ad3b9e37734aa22d36b5335715114e18325fc3b6`。
 
-## 本轮刻意保留
+## 发布阻塞项
 
-- 当前钥匙串没有 Developer ID 身份，因此不能生成可信分享版；脚本现在会拒绝静默生成未签名/未公证的发布包。`ALLOW_ADHOC=1` 只用于本机开发验证；
-- GitHub Actions CI 已配置为在 push 和 pull request 时验证元数据、构建并运行测试；
-- 真实账户页面仍可能随 OpenAI 更新，需要持续使用脱敏 Fixture 回归验证。
+当前钥匙串没有有效的 Developer ID Application 证书，因此不能生成可稳定分享给其它 Mac 的 Gatekeeper 可信安装包。正式分享版还需要 Developer ID 签名和 Apple notarization；脚本会拒绝在缺少这些凭据时静默生成“看似正式”的未公证包。`ALLOW_ADHOC=1` 只用于本机开发验证，并强制在文件名中加入 `local-test`。
+
+## GitHub 状态
+
+2.0.16 经用户明确要求同步 GitHub，完成提交、推送和 GitHub Release。

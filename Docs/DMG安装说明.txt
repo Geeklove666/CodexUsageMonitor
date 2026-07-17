@@ -2,21 +2,24 @@ Codex Usage Monitor 安装说明
 ============================
 
 系统要求
-• macOS 14 或更高版本
-• 支持 Apple Silicon 与 Intel Mac
+• macOS 15 或更高版本（已面向 macOS 27 测试版构建验证）
+• 仅支持 Apple Silicon（M 系列）Mac
 
 安装
-1. 将“Codex Usage Monitor”拖到旁边的 Applications 文件夹。
-2. 前往“应用程序”，右键点按 Codex Usage Monitor，选择“打开”。
-3. 如果系统仍提示无法验证开发者，请先尝试启动一次，然后打开“系统设置 → 隐私与安全性”，在安全性区域选择“仍要打开”。该按钮通常只在尝试启动后的一段时间内显示。
+1. 先退出正在运行的旧版 Codex Usage Monitor。
+2. 将“Codex Usage Monitor”拖到旁边的 Applications 文件夹。
+3. 如果 Finder 提示已存在同名 App，必须选择“替换”。如果选择“保留两者”或取消，系统仍会打开旧版，刷新逻辑不会更新。
+4. 安装完成后只从“应用程序”里的 Codex Usage Monitor 打开，不要直接运行 DMG 窗口中的 App。
+5. 正式分享版经过 Developer ID 签名与 Apple 公证，前往“应用程序”正常打开即可。
+6. 文件名带 local-test 的包只供开发者本机验证，不应发送到其他 Mac。若确实在可信的内部测试中使用，可右键点按 App 选择“打开”，或在首次拦截后前往“系统设置 → 隐私与安全性”选择“仍要打开”。
 
 首次使用
 • 点击菜单栏中的 Codex 状态项。
-• 优先选择“复用本机 Codex”，阅读说明后决定是否授权。
-• 本机来源不可用时，选择“浏览器查看 → 应用内登录”。
+• 选择“OpenAI 登录”，在应用内官方页面完成登录。
+• 返回菜单栏点击“刷新”；本机今日 Token 可另行授权。
 • 登录会话及用量历史只保存在当前 Mac。
 
 说明
 • 这是独立开发的非官方工具，不是 OpenAI 官方产品。
-• 未经 Apple Developer ID 签名和公证的测试包，首次启动可能需要手动确认。
+• 文件名带 local-test 的包未经 Developer ID 签名和 Apple 公证，不能作为公开发行包。
 • 不需要关闭 Gatekeeper，也不要使用命令全局禁用 macOS 安全检查。

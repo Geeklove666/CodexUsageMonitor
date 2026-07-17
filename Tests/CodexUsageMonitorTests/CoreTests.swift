@@ -22,24 +22,27 @@ final class ModelAndFormattingTests: XCTestCase {
         XCTAssertEqual(TokenMilestoneFormatter.message(tokens: 100_000_000), "目前已经花掉了 1 个小目标")
         XCTAssertEqual(TokenMilestoneFormatter.message(tokens: 118_000_000), "目前已经花掉了 1.18 个小目标")
         XCTAssertEqual(TokenMilestoneFormatter.todayMessage(tokens: 18_000_000), "今天已经花掉了 0.18 个小目标")
+        XCTAssertEqual(TokenMilestoneFormatter.todayMessage(tokens: 126_400_000), "今天已经花掉了 1.26 个小目标")
     }
     func testSubscriptionTierFormatting() {
-        XCTAssertEqual(SubscriptionTierFormatter.displayName("plus"), "20$ Plus 订阅")
-        XCTAssertEqual(SubscriptionTierFormatter.displayName("Free"), "0$ Free")
-        XCTAssertEqual(SubscriptionTierFormatter.displayName("pro"), "100$ Pro 订阅")
-        XCTAssertEqual(SubscriptionTierFormatter.displayName("pro_5x"), "100$ Pro 订阅")
-        XCTAssertEqual(SubscriptionTierFormatter.displayName("pro 10x"), "200$ Pro 订阅")
+        XCTAssertEqual(SubscriptionTierFormatter.displayName("plus"), "$20 Plus 订阅")
+        XCTAssertEqual(SubscriptionTierFormatter.displayName("Free"), "$0 Free")
+        XCTAssertEqual(SubscriptionTierFormatter.displayName("go"), "$8 Go 订阅")
+        XCTAssertEqual(SubscriptionTierFormatter.displayName("pro"), "$200 Pro 20x 订阅")
+        XCTAssertEqual(SubscriptionTierFormatter.displayName("Pro"), "$200 Pro 20x 订阅")
+        XCTAssertEqual(SubscriptionTierFormatter.displayName("pro_5x"), "$100 Pro 5x 订阅")
+        XCTAssertEqual(SubscriptionTierFormatter.displayName("prolite"), "$100 Pro 5x 订阅")
+        XCTAssertEqual(SubscriptionTierFormatter.displayName("pro 20x"), "$200 Pro 20x 订阅")
         XCTAssertEqual(SubscriptionTierFormatter.displayName("enterprise"), "Enterprise 订阅")
         XCTAssertEqual(SubscriptionTierFormatter.displayName(nil), "用量监控")
+    }
+    func testCreditsDisplayKeepsIntegerDigitsOnly() {
+        XCTAssertEqual(CreditsDisplay.value(CreditsUsage(remaining: Decimal(string: "2474.4415625"), used: nil, currencyOrUnit: "Credits", expiresAt: nil)), "2474")
+        XCTAssertEqual(CreditsDisplay.value(CreditsUsage(remaining: Decimal(2500), used: nil, currencyOrUnit: "Credits", expiresAt: nil)), "2500")
     }
 }
 
 final class MonitoringStatusTests: XCTestCase {
-    func testRefreshRequiresConsentWhenLocalAuthorizationWasCleared() {
-        XCTAssertTrue(RefreshAuthorizationPolicy.requiresLocalCodexConsent(isAuthorized: false))
-        XCTAssertFalse(RefreshAuthorizationPolicy.requiresLocalCodexConsent(isAuthorized: true))
-    }
-
     func testCachedSnapshotStillReportsRefreshingWhileRequestIsRunning() {
         let cached = CodexUsageSnapshot(
             primaryWindow: UsageLimitWindow(kind: .primary, remainingPercentage: 70, usedPercentage: 30, resetsAt: nil, durationDescription: nil),
@@ -93,6 +96,18 @@ final class MenuBarQuotaLevelTests: XCTestCase {
         XCTAssertEqual(MenuBarQuotaLevel(remainingPercentage: 20), .low)
         XCTAssertEqual(MenuBarQuotaLevel(remainingPercentage: 19.9), .critical)
         XCTAssertEqual(MenuBarQuotaLevel(remainingPercentage: 0), .critical)
+    }
+}
+
+final class AutoRefreshFrequencyTests: XCTestCase {
+    func testOnlySupportedRefreshIntervalsAreAccepted() {
+        XCTAssertEqual(AutoRefreshFrequency.allCases.map(\.rawValue), [0, 60, 300, 600])
+        XCTAssertEqual(AutoRefreshFrequency.sanitizedSeconds(0), 0)
+        XCTAssertEqual(AutoRefreshFrequency.sanitizedSeconds(60), 60)
+        XCTAssertEqual(AutoRefreshFrequency.sanitizedSeconds(300), 300)
+        XCTAssertEqual(AutoRefreshFrequency.sanitizedSeconds(600), 600)
+        XCTAssertEqual(AutoRefreshFrequency.sanitizedSeconds(30), AutoRefreshFrequency.defaultValue.rawValue)
+        XCTAssertEqual(AutoRefreshFrequency.sanitizedSeconds(1_800), AutoRefreshFrequency.defaultValue.rawValue)
     }
 }
 
@@ -177,56 +192,136 @@ final class OfficialUsageAPIParserTests: XCTestCase {
     }
 }
 
-final class CodexAppServerRateLimitParserTests: XCTestCase {
-    let parser = CodexAppServerRateLimitParser()
+final class LocalCodexSessionParserTests: XCTestCase {
+    func testAppServerRateLimitsParseIntoLocalCodexSnapshot() throws {
+        let reset = Int(Date.now.addingTimeInterval(3_600).timeIntervalSince1970)
+        let account = """
+        {"id":2,"result":{"account":{"type":"chatgpt","planType":"pro_20x"}}}
+        """.data(using: .utf8)!
+        let limits = """
+        {"id":3,"result":{"rateLimits":{"primary":{"usedPercent":25,"windowDurationMins":300,"resetsAt":\(reset)},"secondary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":\(reset)},"credits":{"balance":"2500","hasCredits":true,"unlimited":false},"planType":"pro_20x"},"rateLimitResetCredits":{"availableCount":3,"credits":[]}}}
+        """.data(using: .utf8)!
 
-    func testOfficialRateLimitResponseMapsUsedToRemaining() throws {
-        let account = Data(#"{"id":2,"result":{"account":{"type":"chatgpt","email":null,"planType":"plus"},"requiresOpenaiAuth":true}}"#.utf8)
-        let limits = Data(#"{"id":3,"result":{"rateLimits":{"primary":{"usedPercent":25,"windowDurationMins":300,"resetsAt":1730947200},"secondary":{"usedPercent":40,"windowDurationMins":10080,"resetsAt":1731552000},"rateLimitReachedType":null},"rateLimitResetCredits":{"availableCount":3,"credits":[{"resetType":"full","status":"available","grantedAt":1730000000,"expiresAt":1732000000,"title":"Full reset","description":"Reset the usage limit"}]}}}"#.utf8)
+        let snapshot = try CodexAppServerRateLimitParser().parse(account: account, rateLimits: limits)
 
-        let snapshot = try parser.parse(account: account, rateLimits: limits, now: Date(timeIntervalSince1970: 1_700_000_000))
         XCTAssertEqual(snapshot.sourceKind, .localCodexSession)
-        XCTAssertEqual(snapshot.planName, "plus")
+        XCTAssertEqual(snapshot.sourceDisplayName, "本机 Codex 登录")
+        XCTAssertEqual(snapshot.planName, "pro_20x")
+        XCTAssertEqual(snapshot.accountIdentity?.planName, "pro_20x")
         XCTAssertEqual(snapshot.primaryWindow?.remainingPercentage, 75)
-        XCTAssertEqual(snapshot.secondaryWindow?.remainingPercentage, 60)
-        XCTAssertEqual(snapshot.primaryWindow?.resetsAt, Date(timeIntervalSince1970: 1_730_947_200))
+        XCTAssertEqual(snapshot.secondaryWindow?.remainingPercentage, 90)
+        XCTAssertEqual(snapshot.credits?.remaining, Decimal(2500))
         XCTAssertEqual(snapshot.resetAllowance?.availableCount, 3)
-        XCTAssertEqual(snapshot.resetAllowance?.credits.first?.expiresAt, Date(timeIntervalSince1970: 1_732_000_000))
-        XCTAssertEqual(snapshot.confidence, .verified)
+        XCTAssertEqual(LocalCodexSessionAuthorization.preferenceKey, "reuseLocalCodexLogin")
     }
 
-    func testAPIKeyLoginIsNotTreatedAsChatGPTQuota() {
-        let account = Data(#"{"id":2,"result":{"account":{"type":"apiKey"},"requiresOpenaiAuth":true}}"#.utf8)
-        let limits = Data(#"{"id":3,"result":{"rateLimits":{"primary":{"usedPercent":25}}}}"#.utf8)
-        XCTAssertThrowsError(try parser.parse(account: account, rateLimits: limits))
+    func testAppServerRateLimitsAcceptNullResetCreditList() throws {
+        let reset = Int(Date.now.addingTimeInterval(3_600).timeIntervalSince1970)
+        let account = """
+        {"id":2,"result":{"account":{"type":"chatgpt","planType":"plus"},"requiresOpenaiAuth":false}}
+        """.data(using: .utf8)!
+        let limits = """
+        {"id":3,"result":{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":0,"windowDurationMins":10080,"resetsAt":\(reset)},"secondary":null,"credits":{"hasCredits":true,"unlimited":false,"balance":"2184.4377075000"},"individualLimit":null,"spendControlReached":false,"planType":"plus","rateLimitReachedType":null},"rateLimitResetCredits":{"availableCount":1,"credits":null}}}
+        """.data(using: .utf8)!
+
+        let snapshot = try CodexAppServerRateLimitParser().parse(account: account, rateLimits: limits)
+
+        XCTAssertEqual(snapshot.planName, "plus")
+        XCTAssertEqual(snapshot.primaryWindow?.remainingPercentage, 100)
+        XCTAssertEqual(snapshot.secondaryWindow, nil)
+        XCTAssertEqual(snapshot.credits?.remaining, Decimal(string: "2184.4377075000"))
+        XCTAssertEqual(snapshot.resetAllowance?.availableCount, 1)
+        XCTAssertEqual(snapshot.resetAllowance?.credits, [])
     }
 
-    func testCreditsAndSpendControlMetadataArePreserved() throws {
-        let account = Data(#"{"id":2,"result":{"account":{"type":"chatgpt","email":null,"planType":"plus"},"requiresOpenaiAuth":true}}"#.utf8)
-        let limits = Data(#"{"id":3,"result":{"rateLimits":{"primary":{"usedPercent":20},"credits":{"balance":"12.75","hasCredits":true,"unlimited":false},"individualLimit":{"limit":"100","remainingPercent":72,"resetsAt":1731552000,"used":"28"},"limitName":"Codex","rateLimitReachedType":null}}}"#.utf8)
-        let snapshot = try parser.parse(account: account, rateLimits: limits)
-        XCTAssertEqual(snapshot.credits?.remaining, Decimal(string: "12.75"))
-        XCTAssertEqual(snapshot.credits?.currencyOrUnit, "Credits")
-        XCTAssertTrue(snapshot.diagnosticMessage?.contains("个人消费限制剩余 72%") == true)
+    func testAppServerAccountReadRequiringOpenAIAuthIsLoginError() throws {
+        let reset = Int(Date.now.addingTimeInterval(3_600).timeIntervalSince1970)
+        let account = """
+        {"id":2,"result":{"account":null,"requiresOpenaiAuth":true}}
+        """.data(using: .utf8)!
+        let limits = """
+        {"id":3,"result":{"rateLimits":{"primary":{"usedPercent":25,"windowDurationMins":300,"resetsAt":\(reset)}}}}
+        """.data(using: .utf8)!
+
+        do {
+            _ = try CodexAppServerRateLimitParser().parse(account: account, rateLimits: limits)
+            XCTFail("Expected OpenAI auth requirement to be reported as a login error")
+        } catch {
+            XCTAssertEqual(error as? LocalCodexSessionError, .openAIAuthRequired)
+            XCTAssertEqual(error.localizedDescription, "本机 Codex 尚未登录 ChatGPT，请点击 Codex 登录完成授权后再刷新")
+        }
     }
-}
 
-final class LocalQuotaSnapshotCacheTests: XCTestCase {
-    func testCachedQuotaIsFreshOnlyWithinConfiguredLifetime() async {
-        let cache = LocalQuotaSnapshotCache(lifetime: 45)
-        let storedAt = Date(timeIntervalSince1970: 1_700_000_000)
-        let snapshot = CodexUsageSnapshot(
-            id: UUID(), fetchedAt: storedAt,
-            primaryWindow: UsageLimitWindow(kind: .primary, remainingPercentage: 75, usedPercentage: 25, resetsAt: nil, durationDescription: nil),
-            sourceKind: .localCodexSession, sourceDisplayName: "test", confidence: .verified, fieldCompleteness: 0.25
-        )
+    func testAppServerAccountReadWithValidChatGPTAccountIgnoresStaleAuthFlag() throws {
+        let reset = Int(Date.now.addingTimeInterval(3_600).timeIntervalSince1970)
+        let account = """
+        {"id":2,"result":{"account":{"type":"chatgpt","email":"user@example.com","planType":"plus"},"requiresOpenaiAuth":true}}
+        """.data(using: .utf8)!
+        let limits = """
+        {"id":3,"result":{"rateLimits":{"primary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":\(reset)},"secondary":null,"credits":{"hasCredits":true,"unlimited":false,"balance":"2184.4377075000"},"individualLimit":null,"spendControlReached":false,"planType":"plus","rateLimitReachedType":null},"rateLimitResetCredits":{"availableCount":1,"credits":null}}}
+        """.data(using: .utf8)!
 
-        await cache.store(snapshot, now: storedAt)
+        let snapshot = try CodexAppServerRateLimitParser().parse(account: account, rateLimits: limits)
 
-        let fresh = await cache.freshValue(now: storedAt.addingTimeInterval(44.9))
-        let expired = await cache.freshValue(now: storedAt.addingTimeInterval(45))
-        XCTAssertEqual(fresh?.id, snapshot.id)
-        XCTAssertNil(expired)
+        XCTAssertEqual(snapshot.primaryWindow?.remainingPercentage, 80)
+        XCTAssertEqual(snapshot.accountIdentity?.email, "user@example.com")
+        XCTAssertEqual(snapshot.accountIdentity?.planName, "plus")
+    }
+
+    func testCodexRateLimitFetchFailuresAreRetryable() {
+        XCTAssertTrue(LocalCodexQuotaRetryPolicy.shouldRetry(
+            LocalCodexSessionError.protocolFailure("failed to fetch codex rate limit reset credits")
+        ))
+    }
+
+    func testLocalCodexQuotaRetryPolicyRetriesTransientAppServerFailures() async throws {
+        var attempts = 0
+
+        let value = try await LocalCodexQuotaRetryPolicy.run {
+            attempts += 1
+            if attempts < 3 {
+                throw LocalCodexSessionError.protocolFailure("failed to fetch codex rate limits")
+            }
+            return "ok"
+        }
+
+        XCTAssertEqual(value, "ok")
+        XCTAssertEqual(attempts, 3)
+    }
+
+    func testAppServerRateLimitsUsesLimitIdFallbackForCredits() throws {
+        let reset = Int(Date.now.addingTimeInterval(3_600).timeIntervalSince1970)
+        let account = """
+        {"id":2,"result":{"account":{"type":"chatgpt","email":"USER@Example.COM","planType":"pro_20x","provider_account_id":"acct_123"}}}
+        """.data(using: .utf8)!
+        let limits = """
+        {"id":3,"result":{"rateLimits":{"primary":{"usedPercent":40,"windowDurationMins":300,"resetsAt":\(reset)},"plan_type":"pro_20x"},"rate_limits_by_limit_id":{"credits":{"limit_name":"Credit balance","credits":{"hasCredits":true,"unlimited":false,"balance":"123.4567"},"individual_limit":{"limit":2500,"used":100,"remaining_percent":96,"resets_at":\(reset)}}}}}
+        """.data(using: .utf8)!
+
+        let snapshot = try CodexAppServerRateLimitParser().parse(account: account, rateLimits: limits)
+
+        XCTAssertEqual(snapshot.accountIdentity?.email, "user@example.com")
+        XCTAssertEqual(snapshot.accountIdentity?.accountID, "acct_123")
+        XCTAssertEqual(snapshot.planName, "pro_20x")
+        XCTAssertEqual(snapshot.credits?.remaining, Decimal(string: "123.4567"))
+        XCTAssertTrue(snapshot.diagnosticMessage?.contains("子额度 1 项") == true)
+        XCTAssertTrue(snapshot.diagnosticMessage?.contains("个人消费限制剩余 96%") == true)
+    }
+
+    func testAppServerRateLimitsReturnsPartialSnapshotWhenOnlyIdentityAndCreditsExist() throws {
+        let account = """
+        {"id":2,"result":{"account":{"type":"chatgpt","email":"user@example.com","planType":"plus"}}}
+        """.data(using: .utf8)!
+        let limits = """
+        {"id":3,"result":{"rateLimits":{"credits":{"hasCredits":true,"unlimited":false,"balance":"50.25"},"planType":"plus"}}}
+        """.data(using: .utf8)!
+
+        let snapshot = try CodexAppServerRateLimitParser().parse(account: account, rateLimits: limits)
+
+        XCTAssertNil(snapshot.primaryWindow)
+        XCTAssertEqual(snapshot.credits?.remaining, Decimal(string: "50.25"))
+        XCTAssertEqual(snapshot.accountIdentity?.email, "user@example.com")
+        XCTAssertEqual(snapshot.confidence, .medium)
     }
 }
 
@@ -281,56 +376,6 @@ final class OfficialAnalyticsParserTests: XCTestCase {
         XCTAssertFalse(result.has(.plugins))
         XCTAssertEqual(result.totalTokens, 2_300)
         XCTAssertEqual(result.totalThreads, 2)
-    }
-}
-
-final class CodexAppServerAccountUsageParserTests: XCTestCase {
-    private let now = Date(timeIntervalSince1970: 1_752_537_600) // 2025-07-15 00:00:00 UTC
-
-    func testAccountUsageMapsAllAvailableSummaryAndRecentDailyTokens() throws {
-        let response = Data(#"{"id":4,"result":{"summary":{"lifetimeTokens":252740130,"peakDailyTokens":18700000,"longestRunningTurnSec":7322,"currentStreakDays":4,"longestStreakDays":12},"dailyUsageBuckets":[{"startDate":"2025-06-15","tokens":999},{"startDate":"2025-07-14","tokens":1200},{"startDate":"2025-07-15","tokens":3400}]}}"#.utf8)
-
-        let result = try CodexAppServerAccountUsageParser().parse(response: response, now: now)
-
-        XCTAssertEqual(result.sourceDisplayName, "本机 Codex 用量")
-        XCTAssertTrue(result.has(.tokenUsage))
-        XCTAssertFalse(result.has(.activity))
-        XCTAssertEqual(result.dailyActivity.count, 2)
-        XCTAssertEqual(result.totalTokens, 4_600)
-        XCTAssertEqual(result.lifetimeTokens, 252_740_130)
-        XCTAssertEqual(result.peakDailyTokens, 18_700_000)
-        XCTAssertEqual(result.longestRunningTurnSeconds, 7_322)
-        XCTAssertEqual(result.currentStreakDays, 4)
-        XCTAssertEqual(result.longestStreakDays, 12)
-        XCTAssertEqual(result.totalThreads, 0)
-    }
-
-    func testMissingSummaryAndBucketsFailsClosed() {
-        let response = Data(#"{"id":4,"result":{"summary":{}}}"#.utf8)
-        XCTAssertThrowsError(try CodexAppServerAccountUsageParser().parse(response: response, now: now))
-    }
-
-    func testOfficialActivityEnrichesLocalSummaryWithoutInventingFields() throws {
-        let localData = Data(#"{"id":4,"result":{"summary":{"lifetimeTokens":5000},"dailyUsageBuckets":[{"startDate":"2025-07-15","tokens":400}]}}"#.utf8)
-        let local = try CodexAppServerAccountUsageParser().parse(response: localData, now: now)
-        let fixtureURL = try XCTUnwrap(Bundle.module.url(forResource: "analytics-partial", withExtension: "json"))
-        let official = try OfficialAnalyticsParser().parse(data: Data(contentsOf: fixtureURL))
-
-        let merged = local.merging(official)
-
-        XCTAssertEqual(merged.lifetimeTokens, 5_000)
-        XCTAssertTrue(merged.has(.tokenUsage))
-        XCTAssertTrue(merged.has(.activity))
-        XCTAssertEqual(merged.totalThreads, 2)
-        XCTAssertEqual(merged.totalTokens, 400)
-        XCTAssertTrue(merged.sourceDisplayName.contains("本机 Codex 用量"))
-        XCTAssertTrue(merged.sourceDisplayName.contains("官方页面分析"))
-    }
-
-    func testTodayTokensUsesOnlyCurrentCalendarDay() throws {
-        let response = Data(#"{"id":4,"result":{"summary":{"lifetimeTokens":5000},"dailyUsageBuckets":[{"startDate":"2025-07-14","tokens":400},{"startDate":"2025-07-15","tokens":1600}]}}"#.utf8)
-        let result = try CodexAppServerAccountUsageParser().parse(response: response, now: now)
-        XCTAssertEqual(result.tokens(on: now, calendar: Calendar(identifier: .gregorian)), 1_600)
     }
 }
 
@@ -483,6 +528,29 @@ final class UsageHistoryTests: XCTestCase {
         XCTAssertEqual(cached.primaryWindow?.remainingPercentage, 63)
     }
 
+    func testExpiredResetWindowInvalidatesCachedSnapshot() async throws {
+        let now = Date.now
+        let snapshot = CodexUsageSnapshot(
+            fetchedAt: now.addingTimeInterval(-120),
+            primaryWindow: UsageLimitWindow(kind: .primary, remainingPercentage: 63, usedPercentage: 37,
+                                            resetsAt: now.addingTimeInterval(300), durationDescription: "5 小时"),
+            secondaryWindow: UsageLimitWindow(kind: .secondary, remainingPercentage: 41, usedPercentage: 59,
+                                              resetsAt: now.addingTimeInterval(-1), durationDescription: "1 周"),
+            sourceKind: .officialWebPage,
+            sourceDisplayName: "test",
+            confidence: .high,
+            fieldCompleteness: 0.65
+        )
+
+        let cache = CachedSnapshotDataSource(snapshot: snapshot)
+        do {
+            _ = try await cache.fetchUsage()
+            XCTFail("Expected expired reset window to invalidate cached snapshot")
+        } catch {
+            XCTAssertEqual(error as? UsageMonitorError, .staleData)
+        }
+    }
+
     func testAnalyticsIsRestoredWithCachedSnapshot() throws {
         let store = try UsageHistoryStore(inMemory: true)
         let fixtureURL = try XCTUnwrap(Bundle.module.url(forResource: "analytics-partial", withExtension: "json"))
@@ -595,6 +663,25 @@ actor CountingAnalyticsDataSource: CodexAnalyticsDataSource {
     }
 }
 
+actor CacheInvalidatingStubDataSource: CodexUsageDataSource, RefreshCacheInvalidatingDataSource {
+    let identifier: String
+    let displayName: String
+    let sourceKind: UsageSourceKind
+    let result: Result<CodexUsageSnapshot, Error>
+    private(set) var invalidationCount = 0
+
+    init(_ id: String, kind: UsageSourceKind, result: Result<CodexUsageSnapshot, Error>) {
+        identifier = id
+        displayName = id
+        sourceKind = kind
+        self.result = result
+    }
+
+    func availability() async -> DataSourceAvailability { .available }
+    func fetchUsage() async throws -> CodexUsageSnapshot { try result.get() }
+    func invalidateRefreshCaches() async { invalidationCount += 1 }
+}
+
 actor DelayedDataSource: CodexUsageDataSource {
     let identifier = "delayed"
     let displayName = "delayed"
@@ -627,16 +714,6 @@ final class RepositoryTests: XCTestCase {
         let kind = try await repository.fetch().sourceKind
         XCTAssertEqual(kind, .officialWebPage)
     }
-    func testAuthorizedLocalCodexSourcePrecedesWeb() async throws {
-        let local = value(.localCodexSession)
-        let repository = DefaultCodexUsageRepository(
-            official: StubDataSource("official", kind: .verifiedOfficial, state: .unavailable("no"), result: .failure(UsageMonitorError.noAvailableDataSource)),
-            localCodex: StubDataSource("local", kind: .localCodexSession, result: .success(local)),
-            web: StubDataSource("web", kind: .officialWebPage, result: .success(value())),
-            cache: CachedSnapshotDataSource(), estimate: LocalEstimateDataSource())
-        let kind = try await repository.fetch().sourceKind
-        XCTAssertEqual(kind, .localCodexSession)
-    }
     func testFailureFallsBackToCache() async throws {
         let cache = CachedSnapshotDataSource()
         await cache.update(value())
@@ -655,19 +732,18 @@ final class RepositoryTests: XCTestCase {
         do { _ = try await repository.fetch(); XCTFail("Expected failure") } catch { XCTAssertNotNil(error as? UsageMonitorError) }
     }
 
-    func testLocalQuotaIsMergedWithIndependentWebAnalytics() async throws {
+    func testOfficialWebQuotaIsMergedWithIndependentWebAnalytics() async throws {
         let analyticsData = try Data(contentsOf: XCTUnwrap(Bundle.module.url(forResource: "analytics-partial", withExtension: "json")))
         let analytics = try OfficialAnalyticsParser().parse(data: analyticsData)
-        let unavailable = StubDataSource("unavailable", kind: .officialWebPage, state: .unavailable("no"), result: .failure(UsageMonitorError.noAvailableDataSource))
+        let unavailable = StubDataSource("unavailable", kind: .verifiedOfficial, state: .unavailable("no"), result: .failure(UsageMonitorError.noAvailableDataSource))
         let repository = DefaultCodexUsageRepository(
             official: unavailable,
-            localCodex: StubDataSource("local", kind: .localCodexSession, result: .success(value(.localCodexSession))),
-            web: unavailable,
+            web: StubDataSource("web", kind: .officialWebPage, result: .success(value(.officialWebPage))),
             analytics: StubAnalyticsDataSource(result: .success(analytics)),
             cache: CachedSnapshotDataSource(), estimate: LocalEstimateDataSource()
         )
         let merged = try await repository.fetch()
-        XCTAssertEqual(merged.sourceKind, .localCodexSession)
+        XCTAssertEqual(merged.sourceKind, .officialWebPage)
         XCTAssertEqual(merged.analytics?.totalTokens, 2_300)
     }
 
@@ -684,7 +760,7 @@ final class RepositoryTests: XCTestCase {
             result: .failure(UsageMonitorError.noAvailableDataSource)
         )
         let repository = DefaultCodexUsageRepository(
-            official: StubDataSource("local", kind: .localCodexSession, result: .success(value(.localCodexSession))),
+            official: StubDataSource("official", kind: .verifiedOfficial, result: .success(value(.verifiedOfficial))),
             web: unavailable, analytics: counter,
             cache: CachedSnapshotDataSource(), estimate: LocalEstimateDataSource()
         )
@@ -697,6 +773,44 @@ final class RepositoryTests: XCTestCase {
         _ = await repository.fetchAnalytics(for: quota)
         let countAfterAnalytics = await counter.fetchCount
         XCTAssertEqual(countAfterAnalytics, 1)
+    }
+
+    func testManualQuotaFetchInvalidatesRefreshCaches() async throws {
+        let local = CacheInvalidatingStubDataSource(
+            "local", kind: .localCodexSession, result: .success(value(.localCodexSession))
+        )
+        let unavailable = StubDataSource(
+            "unavailable", kind: .verifiedOfficial, state: .unavailable("no"),
+            result: .failure(UsageMonitorError.noAvailableDataSource)
+        )
+        let repository = DefaultCodexUsageRepository(
+            official: unavailable, localCodex: local,
+            web: unavailable, cache: CachedSnapshotDataSource(), estimate: LocalEstimateDataSource()
+        )
+
+        _ = try await repository.fetchQuota(forceRefresh: true)
+
+        let invalidationCount = await local.invalidationCount
+        XCTAssertEqual(invalidationCount, 1)
+    }
+
+    func testAutomaticQuotaFetchDoesNotInvalidateRefreshCaches() async throws {
+        let local = CacheInvalidatingStubDataSource(
+            "local", kind: .localCodexSession, result: .success(value(.localCodexSession))
+        )
+        let unavailable = StubDataSource(
+            "unavailable", kind: .verifiedOfficial, state: .unavailable("no"),
+            result: .failure(UsageMonitorError.noAvailableDataSource)
+        )
+        let repository = DefaultCodexUsageRepository(
+            official: unavailable, localCodex: local,
+            web: unavailable, cache: CachedSnapshotDataSource(), estimate: LocalEstimateDataSource()
+        )
+
+        _ = try await repository.fetchQuota(forceRefresh: false)
+
+        let invalidationCount = await local.invalidationCount
+        XCTAssertEqual(invalidationCount, 0)
     }
 
     func testRequestTimeoutIsBoundedAndReported() async {
@@ -737,6 +851,124 @@ final class NativeUISnapshotSmokeTests: XCTestCase {
         XCTAssertFalse(source.contains(".scaleEffect("))
     }
 
+    func testDashboardFollowsDesignChecklistStructure() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = repositoryRoot
+            .appendingPathComponent("CodexUsageMonitor/Features/Dashboard/DashboardView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        for destination in ["概览", "使用历史", "告警", "数据来源", "设置"] {
+            XCTAssertTrue(source.contains(destination), "Missing dashboard destination: \(destination)")
+        }
+        for state in ["live", "loading", "cached", "estimated", "offline", "unavailable", "exhausted"] {
+            XCTAssertTrue(source.contains("case \(state)"), "Missing dashboard state: \(state)")
+        }
+        for plan in ["$0/月", "$8/月", "$20/月", "$100/月", "$200/月"] {
+            XCTAssertTrue(source.contains(plan), "Missing US pricing baseline: \(plan)")
+        }
+        XCTAssertTrue(source.contains("自动刷新频率"))
+        XCTAssertTrue(source.contains("AutoRefreshFrequency.allCases"))
+        XCTAssertTrue(source.contains("真实刷新诊断"))
+        XCTAssertTrue(source.contains("DemoQuotaSnapshot.make(snapshot: monitor.snapshot"))
+        XCTAssertFalse(source.contains("Picker(\"Demo 状态\""))
+        XCTAssertFalse(source.contains("Demo 界面壳"))
+        XCTAssertFalse(source.contains("Demo 数值"))
+        XCTAssertFalse(source.contains(".glassEffect("), "Dashboard content must not apply glassEffect directly.")
+    }
+
+    func testEnabledLocalCodexMenuActionDoesNotStartLoginFlow() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = repositoryRoot
+            .appendingPathComponent("CodexUsageMonitor/Features/MenuBar/MenuBarViews.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("localCodexLogin ? \"刷新本机 Codex\" : \"启用本机 Codex\""))
+        XCTAssertFalse(source.contains("try? await LocalCodexLoginProbe().startLogin()"))
+    }
+
+    func testMenuBarTitleUsesSystemLabelColor() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = repositoryRoot
+            .appendingPathComponent("CodexUsageMonitor/Features/MenuBar/MenuBarController.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains(".foregroundColor: NSColor.labelColor"))
+        XCTAssertFalse(source.contains("MenuBarQuotaLevel(remainingPercentage: $0).color"))
+        XCTAssertFalse(source.contains("NSColor(labelColor:"))
+    }
+
+    func testMenuPanelPositionUsesButtonBoundsConvertedToWindowCoordinates() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = repositoryRoot
+            .appendingPathComponent("CodexUsageMonitor/Features/MenuBar/MenuBarController.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("button.convert(button.bounds, to: nil)"))
+        XCTAssertFalse(source.contains("buttonWindow.convertToScreen(button.frame)"))
+    }
+
+    func testMenuPanelRootBackgroundAvoidsOversaturatedFirstOpenMaterial() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = repositoryRoot
+            .appendingPathComponent("CodexUsageMonitor/Features/MenuBar/MenuBarViews.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("Color(red: 0.965, green: 0.960, blue: 0.955)"))
+        XCTAssertFalse(source.contains("shape.fill(Color(nsColor: .windowBackgroundColor))"))
+        XCTAssertFalse(source.contains("Color(nsColor: .windowBackgroundColor).opacity(0.94)"))
+        XCTAssertFalse(source.contains("Color(nsColor: .windowBackgroundColor).opacity(0.82)"))
+        XCTAssertFalse(source.contains("shape.fill(.regularMaterial)"))
+        XCTAssertFalse(source.contains("shape.fill(.thinMaterial)"))
+        XCTAssertFalse(source.contains("shape.fill(.ultraThinMaterial)"))
+        XCTAssertFalse(source.contains("systemPink).opacity(0.16)"))
+    }
+
+    func testCardsKeepNeutralFillOverMaterial() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = repositoryRoot
+            .appendingPathComponent("CodexUsageMonitor/Shared/Components/AppleDesignSystem.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("Color(nsColor: .controlBackgroundColor).opacity(0.66)"))
+        XCTAssertTrue(source.contains("Color(red: 0.985, green: 0.982, blue: 0.978)"))
+        XCTAssertFalse(source.contains("shape.fill(Color(nsColor: .controlBackgroundColor))"))
+    }
+
+    func testMenuCompactCardsUseStableNonSamplingBackgrounds() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let menuSource = try String(contentsOf: repositoryRoot
+            .appendingPathComponent("CodexUsageMonitor/Features/MenuBar/MenuBarViews.swift"), encoding: .utf8)
+        let monitoringSource = try String(contentsOf: repositoryRoot
+            .appendingPathComponent("CodexUsageMonitor/Shared/Components/MonitoringComponents.swift"), encoding: .utf8)
+        let analyticsSource = try String(contentsOf: repositoryRoot
+            .appendingPathComponent("CodexUsageMonitor/Shared/Components/AnalyticsComponents.swift"), encoding: .utf8)
+
+        XCTAssertTrue(menuSource.contains("AppleCard(padding: 11, cornerRadius: 16, shadowRadius: 8, shadowY: 2, material: nil)"))
+        XCTAssertTrue(monitoringSource.contains("AppleCard(padding: 12, cornerRadius: 16, shadowRadius: 12, shadowY: 3, material: nil)"))
+        XCTAssertTrue(analyticsSource.contains("AppleCard(padding: 9, cornerRadius: 17, shadowRadius: 14, shadowY: 4, material: nil)"))
+    }
+
     func testCompactUsageSummaryRendersAtMenuWidth() throws {
         let snapshot = CodexUsageSnapshot(
             primaryWindow: UsageLimitWindow(kind: .primary, remainingPercentage: 64, usedPercentage: 36, resetsAt: .now.addingTimeInterval(3600), durationDescription: "5 小时"),
@@ -751,20 +983,6 @@ final class NativeUISnapshotSmokeTests: XCTestCase {
         XCTAssertGreaterThan(image.height, 100)
     }
 
-
-    func testHeroCardRendersAtSupportedDashboardWidths() throws {
-        let snapshot = CodexUsageSnapshot(
-            primaryWindow: UsageLimitWindow(kind: .primary, remainingPercentage: 64, usedPercentage: 36, resetsAt: .now.addingTimeInterval(3600), durationDescription: "5 小时"),
-            sourceKind: .officialWebPage, sourceDisplayName: "test", confidence: .high, fieldCompleteness: 0.25
-        )
-        for width in [672.0, 812.0, 1052.0] {
-            let renderer = ImageRenderer(content: UsageHeroCard(snapshot: snapshot, now: .now).frame(width: width))
-            renderer.scale = 1
-            let image = try XCTUnwrap(renderer.cgImage)
-            XCTAssertEqual(image.width, Int(width))
-            XCTAssertGreaterThan(image.height, 160)
-        }
-    }
 
     func testCompactAnalyticsKeepsStableHeightWhileSourceSwitches() throws {
         let fixtureURL = try XCTUnwrap(Bundle.module.url(forResource: "analytics-partial", withExtension: "json"))

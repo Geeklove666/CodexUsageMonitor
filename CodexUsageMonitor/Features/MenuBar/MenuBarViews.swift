@@ -39,43 +39,15 @@ enum MenuBarQuotaLevel: String, CaseIterable {
     }
 }
 
-struct MenuBarLabel: View {
-    let snapshot: CodexUsageSnapshot
-    let now: Date
-
-    var body: some View {
-        Text("Codex \(menuDetail)")
-            .fontWeight(.semibold)
-            .foregroundStyle(menuColor)
-            .accessibilityLabel(accessibilityLabel)
-    }
-
-    private var menuDetail: String {
-        guard let remaining = snapshot.primaryWindow?.remainingPercentage else { return "--%" }
-        let prefix = snapshot.isEstimated ? "≈" : ""
-        guard let reset = snapshot.primaryWindow?.resetsAt else { return "\(prefix)\(Int(remaining))%" }
-        guard reset > now else { return "\(prefix)\(Int(remaining))% · 已过期" }
-        return "\(prefix)\(Int(remaining))% · \(DurationFormatter.short(reset.timeIntervalSince(now)))"
-    }
-
-    private var quotaLevel: MenuBarQuotaLevel? {
-        snapshot.primaryWindow?.remainingPercentage.map(MenuBarQuotaLevel.init)
-    }
-
-    private var menuColor: Color { quotaLevel?.color ?? .primary }
-
-    private var accessibilityLabel: String {
-        guard let quotaLevel else { return "Codex，暂无额度数据" }
-        return "Codex，\(quotaLevel.accessibilityDescription)，\(menuDetail)"
-    }
-}
-
 struct MenuPanelView: View {
     @Bindable var monitor: UsageMonitoringService
+    var openDashboardAction: (() -> Void)?
+    var openLoginAction: (() -> Void)?
+    var openSettingsAction: (() -> Void)?
     @Environment(\.openWindow) private var openWindow
     @Environment(WebViewSession.self) private var webSession
     @Environment(\.openSettings) private var openSettings
-    @AppStorage(LocalCodexSessionAuthorization.preferenceKey) private var reuseLocalCodexLogin = false
+    @AppStorage(LocalCodexSessionAuthorization.preferenceKey) private var localCodexLogin = false
     @AppStorage(LocalRealtimeTokenAuthorization.preferenceKey) private var localRealtimeTokenUsage = false
     @State private var showsBrowserChoice = false
     @State private var showsLocalCodexConsent = false
@@ -88,19 +60,25 @@ struct MenuPanelView: View {
             progressSection
             CompactAnalyticsSummary(
                 analytics: monitor.snapshot.analytics,
-                realtimeAuthorizationRequired: reuseLocalCodexLogin && !localRealtimeTokenUsage
+                realtimeAuthorizationRequired: !localRealtimeTokenUsage
             )
             statusSection
             actions
         }
         .padding(12)
-        .background { AppBackground().allowsHitTesting(false) }
         .frame(width: 360)
         .fixedSize(horizontal: false, vertical: true)
-        .task { monitor.start() }
+        .background { MenuPanelRootBackground().allowsHitTesting(false) }
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .background { MenuPanelHostWindowConfigurator().frame(width: 0, height: 0) }
+        .containerBackground(.clear, for: .window)
+        .task {
+            monitor.start()
+            await monitor.refreshIfStaleForMenuOpen()
+        }
         .alert("浏览器与应用登录相互独立", isPresented: $showsBrowserChoice) {
             Button("应用内登录") {
-                openWindow(id: "login"); webSession.openUsagePage(); NSApp.activate()
+                showLogin()
             }
             Button("仅在浏览器查看") {
                 NSWorkspace.shared.open(OfficialPageConfiguration.analyticsURL)
@@ -109,15 +87,14 @@ struct MenuPanelView: View {
         } message: {
             Text("浏览器 Cookie 不会同步到监控应用。若要刷新额度，请选择“应用内登录”。")
         }
-        .alert("授权复用本机 Codex 登录？", isPresented: $showsLocalCodexConsent) {
-            Button("授权并使用") {
-                reuseLocalCodexLogin = true
-                localRealtimeTokenUsage = true
+        .alert("允许使用本机 Codex 登录读取额度？", isPresented: $showsLocalCodexConsent) {
+            Button("授权并刷新") {
+                localCodexLogin = true
                 Task { await monitor.refresh() }
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("应用将通过本机 Codex 官方 app-server 读取套餐与额度，并只扫描 ~/.codex/sessions 中的 token_count 事件计算今日 Token；不会直接读取 auth.json、登录 Token、提示词、回复或代码正文。")
+            Text("应用会调用 OpenAI 签名的本机 codex 命令读取额度数据；不会直接读取 auth.json，也不会保存 Token。")
         }
         .alert("允许读取本机实时 Token 事件？", isPresented: $showsRealtimeTokenConsent) {
             Button("授权并刷新") {
@@ -147,7 +124,7 @@ struct MenuPanelView: View {
     }
 
     private var progressSection: some View {
-        AppleCard(padding: 11, cornerRadius: 16, shadowRadius: 8, shadowY: 2) {
+        AppleCard(padding: 11, cornerRadius: 16, shadowRadius: 8, shadowY: 2, material: nil) {
             VStack(spacing: 9) {
                 UsageProgressRow(title: "主额度", window: monitor.snapshot.primaryWindow, now: monitor.now,
                                  color: primaryQuotaColor, isEstimated: monitor.snapshot.isEstimated)
@@ -174,44 +151,45 @@ struct MenuPanelView: View {
                 }
                 .buttonStyle(CompactGlassButtonStyle())
                 .disabled(monitor.isRefreshing)
-                .help("立即刷新额度数据")
+                .help("同步刷新额度数据和今日 Token")
 
                 Button {
-                    openWindow(id: "dashboard"); NSApp.activate()
+                    showDashboard()
                 } label: {
                     Label("完整面板", systemImage: "macwindow")
                         .symbolRenderingMode(.hierarchical)
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(CompactGlassButtonStyle(tint: AppleUI.accent))
-                .help("打开完整用量 Dashboard")
+                .buttonStyle(CompactGlassButtonStyle())
+                .help("打开完整用量面板")
             }
 
             VStack(spacing: 0) {
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 0), GridItem(.flexible())], spacing: 0) {
                     utilityButton(localCodexActionTitle, symbol: "terminal.fill") {
-                        if reuseLocalCodexLogin {
-                            if localRealtimeTokenUsage { Task { await monitor.refresh() } }
-                            else { showsRealtimeTokenConsent = true }
+                        if localCodexLogin {
+                            Task { await monitor.refresh() }
                         } else {
                             showsLocalCodexConsent = true
                         }
                     }
-                    utilityButton("浏览器查看", symbol: "safari") {
+                    utilityButton("OpenAI 登录", symbol: "person.crop.circle") {
                         showsBrowserChoice = true
                     }
                     utilityButton("设置", symbol: "gearshape") {
-                        openSettings(); NSApp.activate()
+                        showSettings()
                     }
                     utilityButton("退出 Codex Usage", symbol: "power", destructive: true) {
                         NSApp.terminate(nil)
                     }
                 }
             }
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .padding(4)
+            .liquidGlassSurface(cornerRadius: 18)
+            .background(Color(nsColor: .controlAccentColor).opacity(0.025), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .strokeBorder(.primary.opacity(0.06), lineWidth: 0.7)
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.16), lineWidth: 0.6)
             }
         }
     }
@@ -220,14 +198,17 @@ struct MenuPanelView: View {
                                action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 8) {
-                Image(systemName: symbol).symbolRenderingMode(.hierarchical)
+                Image(systemName: symbol)
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(destructive ? AppleUI.danger : AppleUI.accent)
+                    .frame(width: 18)
                 Text(title).lineLimit(1).minimumScaleFactor(0.8)
                 Spacer(minLength: 0)
             }
             .font(.caption.weight(.medium))
-            .foregroundStyle(destructive ? AppleUI.danger : Color.primary)
-            .padding(.horizontal, 11)
-            .frame(maxWidth: .infinity, minHeight: 31)
+            .foregroundStyle(destructive ? AppleUI.danger : Color.primary.opacity(0.86))
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, minHeight: 34)
             .contentShape(Rectangle())
         }
         .buttonStyle(PanelUtilityButtonStyle())
@@ -249,31 +230,164 @@ struct MenuPanelView: View {
     }
 
     private var localCodexActionTitle: String {
-        if !reuseLocalCodexLogin { return "授权本机 Codex" }
-        return localRealtimeTokenUsage ? "复用本机 Codex" : "启用今日 Token"
+        localCodexLogin ? "刷新本机 Codex" : "启用本机 Codex"
     }
 
     private func requestRefresh() {
-        if RefreshAuthorizationPolicy.requiresLocalCodexConsent(isAuthorized: reuseLocalCodexLogin) {
-            showsLocalCodexConsent = true
+        Task { await monitor.refresh() }
+    }
+
+    private func showDashboard() {
+        if let openDashboardAction {
+            openDashboardAction()
         } else {
-            Task { await monitor.refresh() }
+            openWindow(id: "dashboard")
+            NSApp.activate()
+        }
+    }
+
+    private func showLogin() {
+        if let openLoginAction {
+            openLoginAction()
+        } else {
+            openWindow(id: "login")
+            webSession.openUsagePage()
+            NSApp.activate()
+        }
+    }
+
+    private func showSettings() {
+        if let openSettingsAction {
+            openSettingsAction()
+        } else {
+            openSettings()
+            NSApp.activate()
         }
     }
 }
 
-struct AnalyticsSourceBadge: View {
-    let analytics: CodexAnalyticsSnapshot
-    var compact = false
+private struct MenuPanelRootBackground: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        Label(analytics.sourceDisplayName, systemImage: "chart.bar.doc.horizontal")
-            .font((compact ? Font.caption2 : Font.caption).weight(.semibold))
-            .foregroundStyle(AppleUI.purple)
-            .padding(.horizontal, compact ? 7 : 9)
-            .padding(.vertical, compact ? 4 : 5)
-            .background(AppleUI.purple.opacity(0.10), in: Capsule())
-            .help("分析数据来源，与额度来源可能不同")
+        let shape = RoundedRectangle(cornerRadius: 24, style: .continuous)
+        ZStack {
+            if reduceTransparency {
+                shape.fill(baseColor)
+            } else {
+                shape.fill(baseColor)
+                shape.fill(
+                    LinearGradient(
+                        colors: [
+                            Color(nsColor: .systemOrange).opacity(0.028),
+                            Color(nsColor: .systemPink).opacity(0.022),
+                            Color(nsColor: .systemPurple).opacity(0.020),
+                            Color(nsColor: .systemBlue).opacity(0.018)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            if !reduceTransparency {
+                Circle()
+                    .fill(Color.white.opacity(0.035))
+                    .blur(radius: 28)
+                    .frame(width: 160, height: 160)
+                    .offset(x: -42, y: -64)
+                    .clipShape(shape)
+            }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if !reduceTransparency {
+                Circle()
+                    .fill(Color(nsColor: .systemBlue).opacity(0.010))
+                    .blur(radius: 32)
+                    .frame(width: 180, height: 180)
+                    .offset(x: 62, y: 76)
+                    .clipShape(shape)
+            }
+        }
+            .overlay {
+                shape.strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(reduceTransparency ? 0 : 0.30),
+                            Color(nsColor: .separatorColor).opacity(contrast == .increased ? 0.48 : 0.20)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: contrast == .increased ? 1 : 0.7
+                )
+            }
+    }
+
+    private var baseColor: Color {
+        colorScheme == .dark
+            ? Color(red: 0.118, green: 0.118, blue: 0.125)
+            : Color(red: 0.965, green: 0.960, blue: 0.955)
+    }
+}
+
+private struct MenuPanelHostWindowConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        configure(view, attemptsRemaining: 8)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        configure(nsView, attemptsRemaining: 4)
+    }
+
+    private func configure(_ view: NSView, attemptsRemaining: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(30)) {
+            guard let window = view.window else {
+                if attemptsRemaining > 0 { configure(view, attemptsRemaining: attemptsRemaining - 1) }
+                return
+            }
+            guard MenuPanelWindowConfigurationRegistry.markIfNeeded(windowNumber: window.windowNumber) else {
+                return
+            }
+
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            window.hasShadow = false
+            window.titleVisibility = .hidden
+            window.titlebarAppearsTransparent = true
+
+            clearBackgrounds(from: window.contentView)
+            clearBackgrounds(from: window.contentView?.superview)
+        }
+    }
+
+    private func clearBackgrounds(from view: NSView?) {
+        guard let view else { return }
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor.clear.cgColor
+        if let visualEffect = view as? NSVisualEffectView {
+            visualEffect.blendingMode = .withinWindow
+            visualEffect.state = .inactive
+            visualEffect.isHidden = true
+        }
+        for subview in view.subviews {
+            clearBackgrounds(from: subview)
+        }
+    }
+}
+
+@MainActor
+private enum MenuPanelWindowConfigurationRegistry {
+    private static var configuredWindowNumbers = Set<Int>()
+
+    static func markIfNeeded(windowNumber: Int) -> Bool {
+        guard windowNumber > 0 else { return true }
+        return configuredWindowNumbers.insert(windowNumber).inserted
     }
 }
 

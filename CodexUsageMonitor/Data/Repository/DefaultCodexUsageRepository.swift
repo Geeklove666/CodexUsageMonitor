@@ -14,7 +14,6 @@ actor DefaultCodexUsageRepository {
     private let cache: CachedSnapshotDataSource
     private let estimate: LocalEstimateDataSource
     private let requestTimeout: Duration
-    private let localQuotaTimeout: Duration
     private let analyticsTimeout: Duration
     private(set) var diagnostic = DataSourceDiagnostic()
 
@@ -23,58 +22,129 @@ actor DefaultCodexUsageRepository {
          analytics: (any CodexAnalyticsDataSource)? = nil,
          analyticsSources: [any CodexAnalyticsDataSource] = [],
          cache: CachedSnapshotDataSource, estimate: LocalEstimateDataSource,
-         requestTimeout: Duration = .seconds(15), localQuotaTimeout: Duration = .seconds(35),
+         requestTimeout: Duration = .seconds(20),
          analyticsTimeout: Duration = .seconds(8)) {
         self.official = official; self.localCodex = localCodex; self.web = web
         self.analyticsSources = analyticsSources.isEmpty ? analytics.map { [$0] } ?? [] : analyticsSources
         self.cache = cache; self.estimate = estimate
         self.requestTimeout = requestTimeout; self.analyticsTimeout = analyticsTimeout
-        self.localQuotaTimeout = localQuotaTimeout
     }
 
-    func fetch() async throws -> CodexUsageSnapshot {
-        let quotaSnapshot = try await fetchQuota()
-        let value = await fetchAnalytics(for: quotaSnapshot)
+    func fetch(forceRefresh: Bool = false) async throws -> CodexUsageSnapshot {
+        let quotaSnapshot = try await fetchQuota(forceRefresh: forceRefresh)
+        let value = await fetchAnalytics(for: quotaSnapshot, forceRefresh: false)
         if !value.isCached && !value.isEstimated {
             await cache.update(value)
         }
         return value
     }
 
-    func fetchQuota() async throws -> CodexUsageSnapshot {
+    func fetchQuota(forceRefresh: Bool = false) async throws -> CodexUsageSnapshot {
+        if forceRefresh {
+            await invalidateRefreshCaches()
+        }
         var sources: [any CodexUsageDataSource] = [official]
         if let localCodex { sources.append(localCodex) }
         sources.append(contentsOf: [web, cache, estimate])
         var lastError: Error = UsageMonitorError.noAvailableDataSource
+        var attempts: [DataSourceAttemptDiagnostic] = []
         for source in sources {
             try Task.checkCancellation()
-            guard case .available = await source.availability() else { continue }
+            let availability = await source.availability()
+            guard case .available = availability else {
+                attempts.append(DataSourceAttemptDiagnostic(
+                    sourceIdentifier: source.identifier,
+                    sourceLabel: source.displayName,
+                    kind: source.sourceKind,
+                    availability: availability.diagnosticLabel,
+                    succeeded: false,
+                    duration: nil,
+                    error: nil,
+                    timestamp: .now
+                ))
+                continue
+            }
             let start = ContinuousClock.now
             do {
-                let timeout = source.sourceKind == .localCodexSession ? localQuotaTimeout : requestTimeout
-                let value = try await withTimeout(timeout) { try await source.fetchUsage() }
+                let value = try await withTimeout(timeout(for: source)) { try await source.fetchUsage() }
+                let duration = start.duration(to: .now).seconds
+                attempts.append(DataSourceAttemptDiagnostic(
+                    sourceIdentifier: source.identifier,
+                    sourceLabel: source.displayName,
+                    kind: source.sourceKind,
+                    availability: availability.diagnosticLabel,
+                    succeeded: true,
+                    duration: duration,
+                    error: nil,
+                    timestamp: .now
+                ))
                 diagnostic.activeIdentifier = source.identifier
                 if !value.isCached && !value.isEstimated {
                     diagnostic.lastSuccess = .now
                     diagnostic.lastFailure = nil
                 }
-                diagnostic.requestDuration = start.duration(to: .now).seconds
+                diagnostic.requestDuration = duration
                 diagnostic.fieldCompleteness = value.fieldCompleteness
                 diagnostic.parserVersion = source.parserVersion
+                diagnostic.attempts = attempts
                 if !value.isCached && !value.isEstimated {
                     await cache.update(value)
                     await estimate.record(value)
                 }
                 return value
             } catch is CancellationError { throw UsageMonitorError.cancelled }
-            catch { lastError = error; diagnostic.lastFailure = SensitiveDataRedactor().redact(error.localizedDescription) }
+            catch {
+                lastError = error
+                let redacted = SensitiveDataRedactor().redact(error.localizedDescription)
+                diagnostic.lastFailure = redacted
+                attempts.append(DataSourceAttemptDiagnostic(
+                    sourceIdentifier: source.identifier,
+                    sourceLabel: source.displayName,
+                    kind: source.sourceKind,
+                    availability: availability.diagnosticLabel,
+                    succeeded: false,
+                    duration: start.duration(to: .now).seconds,
+                    error: redacted,
+                    timestamp: .now
+                ))
+                diagnostic.attempts = attempts
+            }
         }
+        diagnostic.attempts = attempts
         throw lastError
     }
 
     func currentDiagnostic() -> DataSourceDiagnostic { diagnostic }
 
-    func fetchAnalytics(for snapshot: CodexUsageSnapshot) async -> CodexUsageSnapshot {
+    private func timeout(for source: any CodexUsageDataSource) -> Duration {
+        source.sourceKind == .localCodexSession ? .seconds(45) : requestTimeout
+    }
+
+    private func invalidateRefreshCaches() async {
+        var invalidators: [any RefreshCacheInvalidatingDataSource] = []
+        if let invalidating = official as? any RefreshCacheInvalidatingDataSource {
+            invalidators.append(invalidating)
+        }
+        if let invalidating = localCodex as? any RefreshCacheInvalidatingDataSource {
+            invalidators.append(invalidating)
+        }
+        if let invalidating = web as? any RefreshCacheInvalidatingDataSource {
+            invalidators.append(invalidating)
+        }
+        for source in analyticsSources {
+            if let invalidating = source as? any RefreshCacheInvalidatingDataSource {
+                invalidators.append(invalidating)
+            }
+        }
+        for invalidator in invalidators {
+            await invalidator.invalidateRefreshCaches()
+        }
+    }
+
+    func fetchAnalytics(for snapshot: CodexUsageSnapshot, forceRefresh: Bool = false) async -> CodexUsageSnapshot {
+        if forceRefresh {
+            await invalidateRefreshCaches()
+        }
         var combined = snapshot.analytics
         var successfulIdentifiers: [String] = []
         var available: [(Int, any CodexAnalyticsDataSource)] = []
@@ -128,7 +198,7 @@ actor DefaultCodexUsageRepository {
             id: snapshot.id, fetchedAt: snapshot.fetchedAt, sourceUpdatedAt: snapshot.sourceUpdatedAt,
             planName: snapshot.planName, primaryWindow: snapshot.primaryWindow,
             secondaryWindow: snapshot.secondaryWindow, credits: snapshot.credits,
-            resetAllowance: snapshot.resetAllowance, analytics: combined,
+            resetAllowance: snapshot.resetAllowance, analytics: combined, accountIdentity: snapshot.accountIdentity,
             sourceKind: snapshot.sourceKind, sourceDisplayName: snapshot.sourceDisplayName,
             isEstimated: snapshot.isEstimated, isCached: snapshot.isCached,
             confidence: snapshot.confidence, fieldCompleteness: snapshot.fieldCompleteness,
@@ -146,6 +216,16 @@ actor DefaultCodexUsageRepository {
             guard let first = try await group.next() else { throw UsageMonitorError.noAvailableDataSource }
             group.cancelAll()
             return first
+        }
+    }
+}
+
+private extension DataSourceAvailability {
+    var diagnosticLabel: String {
+        switch self {
+        case .available: "可用"
+        case .authenticationRequired: "需要登录"
+        case .unavailable(let reason): SensitiveDataRedactor().redact(reason)
         }
     }
 }

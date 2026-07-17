@@ -6,6 +6,7 @@ final class DependencyContainer {
     let history: UsageHistoryStore
     let repository: DefaultCodexUsageRepository
     let monitoring: UsageMonitoringService
+    let menuBarController: MenuBarController
 
     init() {
         var persistenceWarnings: [String] = []
@@ -29,13 +30,13 @@ final class DependencyContainer {
         let webSource = OfficialWebViewDataSource(
             session: webSession, apiParser: OfficialUsageAPIParser(), parser: OfficialPageDOMParser()
         )
+        let localCodexSource = LocalCodexSessionDataSource()
         let realtimeTokenReader = LocalRealtimeTokenUsageReader()
-        let localSource = LocalCodexSessionDataSource()
         repository = DefaultCodexUsageRepository(
             official: VerifiedOfficialDataSource(),
-            localCodex: localSource,
+            localCodex: localCodexSource,
             web: webSource,
-            analyticsSources: [localSource, webSource],
+            analyticsSources: [localCodexSource, webSource],
             cache: cache, estimate: estimate)
         let initialSnapshot = restored.last.flatMap {
             try? CachedSnapshotDataSource.cachedSnapshot(from: $0, maximumAge: 86_400)
@@ -44,6 +45,7 @@ final class DependencyContainer {
             repository: repository, history: history,
             realtimeTokenReader: realtimeTokenReader, initialSnapshot: initialSnapshot
         )
+        menuBarController = MenuBarController(monitor: monitoring, history: history, webSession: webSession)
         monitoring.persistenceWarning = persistenceWarnings.isEmpty ? nil : persistenceWarnings.joined(separator: "\n")
         webSession.onPageReady = { [weak monitoring] in
             Task { @MainActor in
@@ -52,11 +54,8 @@ final class DependencyContainer {
                 await monitoring?.refresh()
             }
         }
-        let defaults = UserDefaults.standard
-        let localAuthorized = defaults.bool(forKey: LocalCodexSessionAuthorization.preferenceKey)
-        let webEnrichment = defaults.bool(forKey: "officialWebAnalyticsEnrichment")
-        // Avoid hidden page/network activity when the user selected local-only monitoring.
-        if !localAuthorized || webEnrichment { webSession.openUsagePage() }
+        // Keep the isolated first-party web session warm as a fallback and login surface.
+        webSession.openUsagePage()
         monitoring.start()
     }
 }

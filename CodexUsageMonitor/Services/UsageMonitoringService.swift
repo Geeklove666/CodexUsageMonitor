@@ -4,6 +4,8 @@ import OSLog
 
 @MainActor @Observable
 final class UsageMonitoringService {
+    static let refreshIntervalPreferenceKey = "autoRefreshSeconds"
+
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "local.codex-usage-monitor", category: "monitoring")
     private let repository: DefaultCodexUsageRepository
     private let history: UsageHistoryStore
@@ -14,8 +16,12 @@ final class UsageMonitoringService {
     private let resetDetector = ResetDetectionService()
     private var loopTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
+    private var activeRefreshForceRefresh = false
+    private var refreshGeneration: UInt64 = 0
     private var analyticsTask: Task<Void, Never>?
+    private var resetBoundaryTask: Task<Void, Never>?
     private var failures = 0
+    private var lastMenuOpenAt: Date?
 
     var snapshot = CodexUsageSnapshot.unavailable
     var isRefreshing = false
@@ -33,44 +39,76 @@ final class UsageMonitoringService {
          initialSnapshot: CodexUsageSnapshot = .unavailable) {
         self.repository = repository; self.history = history
         self.realtimeTokenReader = realtimeTokenReader; snapshot = initialSnapshot
-        networkMonitor.onRestored = { [weak self] in Task { @MainActor in await self?.refresh() } }
+        networkMonitor.onRestored = { [weak self] in Task { @MainActor in await self?.refresh(reason: "网络恢复", forceRefresh: false) } }
     }
 
     func start() {
         guard loopTask == nil else { return }
+        startLoop(refreshImmediately: true)
+    }
+
+    func restartRefreshLoop() {
+        loopTask?.cancel()
+        loopTask = nil
+        startLoop(refreshImmediately: false)
+    }
+
+    private func startLoop(refreshImmediately: Bool) {
         loopTask = Task { [weak self] in
-            await self?.refresh()
+            if refreshImmediately { await self?.refresh(reason: "启动刷新", forceRefresh: false) }
             while !Task.isCancelled {
                 guard let self else { return }
                 self.now = .now
                 let defaults = UserDefaults.standard
-                let active = max(30, defaults.double(forKey: "activeRefreshSeconds"))
-                let idle = max(30, defaults.double(forKey: "idleRefreshSeconds"))
-                let base = defaults.bool(forKey: "smartRefresh") ? (self.processMonitor.isActive() ? active : idle) : idle
+                let configured = defaults.object(forKey: Self.refreshIntervalPreferenceKey) as? Int
+                    ?? AutoRefreshFrequency.defaultValue.rawValue
+                let base = refreshDelay(configuredSeconds: configured)
                 let backoff = [0.0, 60, 120, 300, 600, 1800][min(self.failures, 5)]
                 let delay = max(base, backoff) * Double.random(in: 0.95...1.05)
                 try? await Task.sleep(for: .seconds(delay))
-                await self.refresh()
+                await self.refresh(reason: "自动刷新", forceRefresh: false)
             }
         }
     }
 
-    func refresh() async {
+    func noteMenuOpened() {
+        lastMenuOpenAt = .now
+    }
+
+    func refreshIfStaleForMenuOpen(maxAge: TimeInterval = 120) async {
+        noteMenuOpened()
+        if shouldRefreshForMenuOpen(maxAge: maxAge) {
+            await refresh(reason: "菜单打开", forceRefresh: false)
+        }
+    }
+
+    func refresh(reason: String = "手动刷新", forceRefresh: Bool = true) async {
         if let refreshTask {
+            let existingGeneration = refreshGeneration
+            let existingIsForceRefresh = activeRefreshForceRefresh
             await refreshTask.value
-            return
+            guard forceRefresh, !existingIsForceRefresh else { return }
+            if refreshGeneration == existingGeneration {
+                self.refreshTask = nil
+                activeRefreshForceRefresh = false
+                isRefreshing = false
+            }
         }
         isRefreshing = true
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
+        activeRefreshForceRefresh = forceRefresh
         analyticsTask?.cancel()
         refreshTask = Task { [weak self] in
             guard let self else { return }
             let previous = self.snapshot
             async let realtimeValue = self.realtimeTokenReader.analyticsSnapshot()
             do {
-                var quota = try await self.repository.fetchQuota()
+                var quota = try await self.repository.fetchQuota(forceRefresh: forceRefresh)
                 if let realtime = await realtimeValue { quota = quota.mergingAnalytics(realtime) }
                 self.snapshot = quota
                 self.diagnostic = await self.repository.currentDiagnostic()
+                self.diagnostic.lastRefreshReason = reason
                 if quota.isCached || quota.isEstimated {
                     self.lastError = self.diagnostic.lastFailure ?? "未能获取新额度，正在保留上次数据"
                     self.failures += 1
@@ -81,31 +119,42 @@ final class UsageMonitoringService {
                     self.logger.info("Quota refresh succeeded via \(quota.sourceKind.rawValue, privacy: .public)")
                 }
                 await self.persistAndNotify(previous: previous, current: quota)
-                self.startAnalyticsEnrichment(for: quota)
+                self.scheduleResetBoundaryRefresh(for: quota)
+                self.startAnalyticsEnrichment(for: quota, generation: generation)
             } catch {
                 if let realtime = await realtimeValue {
                     self.snapshot = self.snapshot.mergingAnalytics(realtime)
                 }
                 self.failures += 1
                 let redacted = SensitiveDataRedactor().redact(error.localizedDescription)
-                let quotaError = UserDefaults.standard.bool(forKey: LocalCodexSessionAuthorization.preferenceKey)
-                    ? redacted : "尚未授权复用本机 Codex 登录"
+                let quotaError = redacted
                 self.lastError = self.snapshot.analytics?.todayTokens == nil
                     ? quotaError : "\(quotaError)；今日 Token 保留上次结果"
                 self.logger.error("Usage refresh failed: \(redacted, privacy: .public)")
                 self.diagnostic = await self.repository.currentDiagnostic()
+                self.diagnostic.lastRefreshReason = reason
             }
         }
         await refreshTask?.value
-        refreshTask = nil
-        isRefreshing = false; now = .now
+        if refreshGeneration == generation {
+            refreshTask = nil
+            activeRefreshForceRefresh = false
+            isRefreshing = false
+            now = .now
+        }
     }
 
-    private func startAnalyticsEnrichment(for quota: CodexUsageSnapshot) {
+    private func startAnalyticsEnrichment(for quota: CodexUsageSnapshot, generation: UInt64) {
         analyticsTask = Task { [weak self] in
             guard let self else { return }
             let enriched = await self.repository.fetchAnalytics(for: quota)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled,
+                  self.refreshGeneration == generation,
+                  self.snapshot.id == quota.id
+            else {
+                self.logger.info("Discarded stale analytics enrichment")
+                return
+            }
             if let analytics = enriched.analytics {
                 self.snapshot = self.snapshot.mergingAnalytics(analytics)
             }
@@ -118,6 +167,25 @@ final class UsageMonitoringService {
                 self.persistenceWarning = "历史保存失败：\(SensitiveDataRedactor().redact(error.localizedDescription))"
             }
             self.diagnostic = await self.repository.currentDiagnostic()
+        }
+    }
+
+    private func scheduleResetBoundaryRefresh(for snapshot: CodexUsageSnapshot) {
+        resetBoundaryTask?.cancel()
+        guard !snapshot.isCached, !snapshot.isEstimated else { return }
+        let now = Date.now
+        let resetDates = [snapshot.primaryWindow?.resetsAt, snapshot.secondaryWindow?.resetsAt]
+            .compactMap { $0 }
+            .filter { $0 > now }
+        guard let nextReset = resetDates.min() else { return }
+        let delay = max(5, nextReset.timeIntervalSince(now) + 5)
+        resetBoundaryTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.now = .now
+            }
+            await self?.refresh(reason: "额度重置边界", forceRefresh: false)
         }
     }
 
@@ -134,7 +202,30 @@ final class UsageMonitoringService {
     }
 
     func cancel() {
-        loopTask?.cancel(); refreshTask?.cancel(); analyticsTask?.cancel()
-        loopTask = nil; refreshTask = nil; analyticsTask = nil
+        loopTask?.cancel(); refreshTask?.cancel(); analyticsTask?.cancel(); resetBoundaryTask?.cancel()
+        loopTask = nil; refreshTask = nil; analyticsTask = nil; resetBoundaryTask = nil
+    }
+
+    private func shouldRefreshForMenuOpen(maxAge: TimeInterval) -> Bool {
+        if isRefreshing { return false }
+        if snapshot.sourceKind == .unavailable { return true }
+        if lastError != nil { return true }
+        if snapshot.isCached || snapshot.isEstimated { return true }
+        return Date.now.timeIntervalSince(snapshot.fetchedAt) > maxAge
+    }
+
+    private func refreshDelay(configuredSeconds: Int) -> Double {
+        guard AutoRefreshFrequency(rawValue: configuredSeconds) == .adaptive else {
+            return Double(AutoRefreshFrequency.sanitizedSeconds(configuredSeconds))
+        }
+        let process = ProcessInfo.processInfo
+        if process.isLowPowerModeEnabled || process.thermalState == .serious || process.thermalState == .critical {
+            return Double(AutoRefreshFrequency.tenMinutes.rawValue)
+        }
+        guard let lastMenuOpenAt else { return Double(AutoRefreshFrequency.tenMinutes.rawValue) }
+        let age = Date.now.timeIntervalSince(lastMenuOpenAt)
+        if age <= 5 * 60 { return Double(AutoRefreshFrequency.oneMinute.rawValue) }
+        if age <= 60 * 60 { return Double(AutoRefreshFrequency.fiveMinutes.rawValue) }
+        return Double(AutoRefreshFrequency.tenMinutes.rawValue)
     }
 }

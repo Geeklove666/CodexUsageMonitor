@@ -3,14 +3,29 @@ import Foundation
 import Security
 
 enum LocalCodexSessionAuthorization {
-    static let preferenceKey = "experimentalReuseLocalCodexLogin"
+    static let preferenceKey = "reuseLocalCodexLogin"
     static let allowCustomExecutableKey = "allowCustomCodexExecutable"
 }
 
-enum LocalCodexSessionError: LocalizedError, Sendable {
+enum LocalCodexLoginStatus: Equatable, Sendable {
+    case loggedIn(String)
+    case loggedOut(String)
+    case unavailable(String)
+
+    var label: String {
+        switch self {
+        case .loggedIn(let detail): "已登录 · \(detail)"
+        case .loggedOut(let detail): "未登录 · \(detail)"
+        case .unavailable(let detail): "不可用 · \(detail)"
+        }
+    }
+}
+
+enum LocalCodexSessionError: LocalizedError, Equatable, Sendable {
     case executableMissing
     case notAuthorized
     case notChatGPTLogin
+    case openAIAuthRequired
     case invalidResponse
     case serverFailure
     case protocolFailure(String)
@@ -18,8 +33,9 @@ enum LocalCodexSessionError: LocalizedError, Sendable {
     var errorDescription: String? {
         switch self {
         case .executableMissing: "未找到本机 Codex 命令"
-        case .notAuthorized: "尚未授权复用本机 Codex 登录"
+        case .notAuthorized: "尚未授权使用本机 Codex 登录"
         case .notChatGPTLogin: "本机 Codex 当前不是 ChatGPT 登录"
+        case .openAIAuthRequired: "本机 Codex 尚未登录 ChatGPT，请点击 Codex 登录完成授权后再刷新"
         case .invalidResponse: "本机 Codex 返回了无法识别的额度数据"
         case .serverFailure: "本机 Codex 数据服务暂时不可用"
         case .protocolFailure(let message): "本机 Codex 协议错误：\(message)"
@@ -75,10 +91,65 @@ struct CodexExecutableLocator: Sendable {
     }
 }
 
-struct LocalCodexSessionDataSource: CodexUsageDataSource, CodexAnalyticsDataSource {
+struct LocalCodexLoginProbe: Sendable {
+    let locator: CodexExecutableLocator
+
+    init(locator: CodexExecutableLocator = CodexExecutableLocator()) {
+        self.locator = locator
+    }
+
+    func status() async -> LocalCodexLoginStatus {
+        guard let executable = locator.locate() else {
+            return .unavailable("未找到 OpenAI 签名的本机 Codex 命令")
+        }
+        do {
+            let result = try await run(executable: executable, arguments: ["login", "status"], waitsForExit: true)
+            let output = SensitiveDataRedactor().redact(result.output.trimmingCharacters(in: .whitespacesAndNewlines))
+            guard result.exitCode == 0 else { return .loggedOut(output.isEmpty ? "需要运行 codex login" : output) }
+            return output.localizedCaseInsensitiveContains("logged in")
+                ? .loggedIn(output.replacingOccurrences(of: "Logged in using ", with: ""))
+                : .loggedOut(output.isEmpty ? "需要运行 codex login" : output)
+        } catch {
+            return .unavailable(SensitiveDataRedactor().redact(error.localizedDescription))
+        }
+    }
+
+    func startLogin() async throws {
+        guard let executable = locator.locate() else { throw LocalCodexSessionError.executableMissing }
+        _ = try await run(executable: executable, arguments: ["login"], waitsForExit: false)
+    }
+
+    private func run(executable: URL, arguments: [String], waitsForExit: Bool) async throws -> (output: String, exitCode: Int32) {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                let process = Process()
+                let output = Pipe()
+                process.executableURL = executable
+                process.arguments = arguments
+                process.standardOutput = output
+                process.standardError = output
+                process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
+                do {
+                    try process.run()
+                    if waitsForExit {
+                        process.waitUntilExit()
+                        let data = output.fileHandleForReading.readDataToEndOfFile()
+                        continuation.resume(returning: (String(data: data, encoding: .utf8) ?? "", process.terminationStatus))
+                    } else {
+                        continuation.resume(returning: ("", 0))
+                    }
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+}
+
+struct LocalCodexSessionDataSource: CodexUsageDataSource, CodexAnalyticsDataSource, RefreshCacheInvalidatingDataSource {
     let identifier = "local-codex-session"
     let analyticsIdentifier = "local-codex-account-usage"
-    let displayName = "本机 Codex 登录（实验性）"
+    let displayName = "本机 Codex 登录"
     let sourceKind = UsageSourceKind.localCodexSession
     let parserVersion: String? = "Codex app-server v2 rate-limits"
     let analyticsParserVersion: String? = "Codex app-server v2 account-usage"
@@ -105,6 +176,9 @@ struct LocalCodexSessionDataSource: CodexUsageDataSource, CodexAnalyticsDataSour
             return .unavailable("需要用户主动授权")
         }
         guard locator.locate() != nil else { return .unavailable("未找到本机 Codex 命令") }
+        guard case .loggedIn = await LocalCodexLoginProbe(locator: locator).status() else {
+            return .authenticationRequired
+        }
         return .available
     }
 
@@ -114,8 +188,16 @@ struct LocalCodexSessionDataSource: CodexUsageDataSource, CodexAnalyticsDataSour
         }
         if let cached = await quotaCache.freshValue() { return cached }
         guard let executable = locator.locate() else { throw LocalCodexSessionError.executableMissing }
-        let responses = try await CodexAppServerClient(executable: executable).readAccountAndRateLimits()
-        let quota = try parser.parse(account: responses.account, rateLimits: responses.rateLimits)
+        let client = CodexAppServerClient(executable: executable)
+        let responses = try await LocalCodexQuotaRetryPolicy.run {
+            try await client.readAccountAndRateLimits()
+        }
+        let quota: CodexUsageSnapshot
+        do {
+            quota = try parser.parse(account: responses.account, rateLimits: responses.rateLimits)
+        } catch is DecodingError {
+            throw LocalCodexSessionError.invalidResponse
+        }
         await quotaCache.store(quota)
         return quota
     }
@@ -127,12 +209,52 @@ struct LocalCodexSessionDataSource: CodexUsageDataSource, CodexAnalyticsDataSour
             throw LocalCodexSessionError.notAuthorized
         }
         if let cached = await accountUsageCache.freshValue() {
-            return try usageParser.parse(response: cached)
+            do {
+                return try usageParser.parse(response: cached)
+            } catch is DecodingError {
+                throw LocalCodexSessionError.invalidResponse
+            }
         }
         guard let executable = locator.locate() else { throw LocalCodexSessionError.executableMissing }
         let response = try await CodexAppServerClient(executable: executable).readAccountUsage()
         await accountUsageCache.store(response)
-        return try usageParser.parse(response: response)
+        do {
+            return try usageParser.parse(response: response)
+        } catch is DecodingError {
+            throw LocalCodexSessionError.invalidResponse
+        }
+    }
+
+    func invalidateRefreshCaches() async {
+        await quotaCache.clear()
+        await accountUsageCache.clear()
+    }
+}
+
+enum LocalCodexQuotaRetryPolicy {
+    static func run<T: Sendable>(_ operation: () async throws -> T) async throws -> T {
+        var lastError: Error?
+        for attempt in 0..<3 {
+            do {
+                return try await operation()
+            } catch {
+                lastError = error
+                guard attempt < 2, shouldRetry(error) else { throw error }
+                try await Task.sleep(for: .milliseconds(Int.random(in: 800...1_600) * (attempt + 1)))
+            }
+        }
+        throw lastError ?? LocalCodexSessionError.serverFailure
+    }
+
+    static func shouldRetry(_ error: Error) -> Bool {
+        if error is CancellationError { return false }
+        if case LocalCodexSessionError.serverFailure = error { return true }
+        guard case LocalCodexSessionError.protocolFailure(let message) = error else { return false }
+        let normalized = message.lowercased()
+        return ["overloaded", "temporarily", "unavailable", "timeout", "timed out",
+                "connection reset", "connection refused", "broken pipe", "服务暂时",
+                "failed to fetch codex rate", "rate limit reset"]
+            .contains { normalized.contains($0) }
     }
 }
 
@@ -152,6 +274,11 @@ actor LocalQuotaSnapshotCache {
         self.value = value
         storedAt = now
     }
+
+    func clear() {
+        value = nil
+        storedAt = nil
+    }
 }
 
 actor LocalAccountUsageCache {
@@ -168,6 +295,11 @@ actor LocalAccountUsageCache {
         self.value = value
         fetchedAt = now
     }
+
+    func clear() {
+        value = nil
+        fetchedAt = nil
+    }
 }
 
 struct CodexAppServerResponses: Sendable {
@@ -179,13 +311,7 @@ struct CodexAppServerClient: Sendable {
     let executable: URL
 
     func readAccountAndRateLimits() async throws -> CodexAppServerResponses {
-        let output: Data
-        do {
-            output = try await runAccountAndRateLimits(refreshToken: false)
-        } catch LocalCodexSessionError.protocolFailure(let message)
-                    where Self.isAuthenticationFailure(message) {
-            output = try await runAccountAndRateLimits(refreshToken: true)
-        }
+        let output = try await runAccountAndRateLimits()
 
         var account: Data?
         var rateLimits: Data?
@@ -194,11 +320,12 @@ struct CodexAppServerClient: Sendable {
             guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let id = (object["id"] as? NSNumber)?.intValue else { continue }
             if let error = object["error"] as? [String: Any] {
-                throw LocalCodexSessionError.protocolFailure(
-                    SensitiveDataRedactor().redact(error["message"] as? String ?? "未知服务错误")
-                )
+                throw Self.mappedProtocolError(error["message"] as? String ?? "未知服务错误")
             }
-            if id == 2 { account = data }
+            if id == 2 {
+                try Self.validateAccountResponse(data)
+                account = data
+            }
             if id == 3 { rateLimits = data }
         }
 
@@ -206,13 +333,35 @@ struct CodexAppServerClient: Sendable {
         return CodexAppServerResponses(account: account, rateLimits: rateLimits)
     }
 
-    private func runAccountAndRateLimits(refreshToken: Bool) async throws -> Data {
+    private static func validateAccountResponse(_ data: Data) throws {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = object["result"] as? [String: Any] else {
+            throw LocalCodexSessionError.invalidResponse
+        }
+        if result["account"] == nil || result["account"] is NSNull {
+            throw LocalCodexSessionError.openAIAuthRequired
+        }
+    }
+
+    fileprivate static func mappedProtocolError(_ message: String) -> LocalCodexSessionError {
+        let redacted = SensitiveDataRedactor().redact(message)
+        let normalized = redacted.lowercased()
+        if normalized.contains("authentication required") ||
+            normalized.contains("requires openai auth") ||
+            normalized.contains("not logged in") ||
+            normalized.contains("login required") {
+            return .openAIAuthRequired
+        }
+        return .protocolFailure(redacted)
+    }
+
+    private func runAccountAndRateLimits() async throws -> Data {
         let runner = CodexAppServerProcess(executable: executable)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 DispatchQueue.global(qos: .utility).async {
                     do {
-                        continuation.resume(returning: try runner.run(refreshToken: refreshToken))
+                        continuation.resume(returning: try runner.run())
                     } catch {
                         continuation.resume(throwing: error)
                     }
@@ -221,12 +370,6 @@ struct CodexAppServerClient: Sendable {
         } onCancel: {
             runner.stop()
         }
-    }
-
-    private static func isAuthenticationFailure(_ message: String) -> Bool {
-        let normalized = message.lowercased()
-        return normalized.contains("auth") || normalized.contains("token")
-            || normalized.contains("unauthorized") || normalized.contains("登录")
     }
 
     func readAccountUsage() async throws -> Data {
@@ -256,7 +399,7 @@ private final class CodexAppServerProcess: @unchecked Sendable {
 
     init(executable: URL) {
         process.executableURL = executable
-        process.arguments = ["app-server", "--stdio"]
+        process.arguments = ["-s", "read-only", "-a", "untrusted", "app-server"]
         process.standardInput = input
         process.standardOutput = output
         process.standardError = errorOutput
@@ -270,15 +413,15 @@ private final class CodexAppServerProcess: @unchecked Sendable {
         }
     }
 
-    func run(refreshToken: Bool) throws -> Data {
+    func run() throws -> Data {
         try start()
         defer { finish() }
-        try send("{\"method\":\"account/read\",\"id\":2,\"params\":{\"refreshToken\":\(refreshToken)}}")
+        // Refresh the persisted ChatGPT credential first. Sending rateLimits/read
+        // concurrently can race the refresh and intermittently fail on cold sessions.
+        try send(#"{"method":"account/read","id":2,"params":{"refreshToken":true}}"#)
+        let account = try readResponse(id: 2)
         try send(#"{"method":"account/rateLimits/read","id":3}"#)
-        let responses = try readResponses(ids: [2, 3])
-        guard let account = responses[2], let rateLimits = responses[3] else {
-            throw LocalCodexSessionError.invalidResponse
-        }
+        let rateLimits = try readResponse(id: 3)
         let data = account + Data([0x0A]) + rateLimits + Data([0x0A])
         try checkCancellation()
         return data
@@ -342,29 +485,11 @@ private final class CodexAppServerProcess: @unchecked Sendable {
                   let id = (object["id"] as? NSNumber)?.intValue,
                   id == expectedID else { continue }
             if let error = object["error"] as? [String: Any] {
-                let message = SensitiveDataRedactor().redact(error["message"] as? String ?? "未知服务错误")
-                throw LocalCodexSessionError.protocolFailure(message)
+                throw CodexAppServerClient.mappedProtocolError(error["message"] as? String ?? "未知服务错误")
             }
             return line
         }
         throw LocalCodexSessionError.invalidResponse
-    }
-
-    private func readResponses(ids expectedIDs: Set<Int>) throws -> [Int: Data] {
-        var responses: [Int: Data] = [:]
-        for _ in 0..<200 where responses.count < expectedIDs.count {
-            let line = try readLine()
-            guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-                  let id = (object["id"] as? NSNumber)?.intValue,
-                  expectedIDs.contains(id) else { continue }
-            if let error = object["error"] as? [String: Any] {
-                let message = SensitiveDataRedactor().redact(error["message"] as? String ?? "未知服务错误")
-                throw LocalCodexSessionError.protocolFailure(message)
-            }
-            responses[id] = line
-        }
-        guard responses.count == expectedIDs.count else { throw LocalCodexSessionError.invalidResponse }
-        return responses
     }
 
     private func readLine() throws -> Data {
@@ -420,24 +545,37 @@ struct CodexAppServerRateLimitParser: Sendable {
     func parse(account accountData: Data, rateLimits rateLimitsData: Data, now: Date = .now) throws -> CodexUsageSnapshot {
         let decoder = JSONDecoder()
         let accountResponse = try decoder.decode(AccountResponse.self, from: accountData)
-        guard let account = accountResponse.result?.account else { throw LocalCodexSessionError.notChatGPTLogin }
+        guard let account = accountResponse.result?.account else { throw LocalCodexSessionError.openAIAuthRequired }
         guard account.type == "chatgpt" || account.type == "personalAccessToken" else {
             throw LocalCodexSessionError.notChatGPTLogin
         }
 
         let limitsResponse = try decoder.decode(RateLimitsResponse.self, from: rateLimitsData)
-        guard let limits = limitsResponse.result?.rateLimits,
-              let primary = makeWindow(limits.primary, kind: .primary) else {
+        guard let result = limitsResponse.result,
+              let limits = result.rateLimits else {
             throw LocalCodexSessionError.invalidResponse
         }
+        let candidates = rateLimitCandidates(primary: limits, byLimitID: result.rateLimitsByLimitId)
+        let primary = candidates.lazy.compactMap { makeWindow($0.primary, kind: .primary) }.first
         let secondary = makeWindow(limits.secondary, kind: .secondary)
-        let credits = makeCredits(limits.credits)
+            ?? candidates.dropFirst().lazy.compactMap { makeWindow($0.secondary, kind: .secondary) }.first
+        let credits = candidates.lazy.compactMap { makeCredits($0.credits) }.first
         let resetAllowance = makeResetAllowance(limitsResponse.result?.rateLimitResetCredits)
-        let planName = account.planType ?? limits.planType
+        let planName = account.planType ?? candidates.lazy.compactMap(\.planType).first
+        let accountIdentity = CodexAccountIdentity(
+            email: account.email,
+            accountID: account.accountID,
+            planName: planName
+        )
+        guard primary != nil || secondary != nil || credits != nil || accountIdentity.hasAnyValue else {
+            throw LocalCodexSessionError.invalidResponse
+        }
         let completeness = min(1, 0.25 + (secondary == nil ? 0 : 0.2) + (planName == nil ? 0 : 0.2)
             + (credits == nil ? 0 : 0.15) + (resetAllowance == nil ? 0 : 0.1))
+        let individualLimit = candidates.lazy.compactMap(\.individualLimit).first
         let details = [limits.limitName, limits.rateLimitReachedType,
-                       limits.individualLimit.map { "个人消费限制剩余 \($0.remainingPercent)%" },
+                       individualLimit?.remainingPercent.map { "个人消费限制剩余 \(Int($0.rounded()))%" },
+                       result.rateLimitsByLimitId.map { "子额度 \($0.count) 项" },
                        resetAllowance.map { "使用限额重置可用 \($0.availableCount) 次" }]
             .compactMap { $0 }.joined(separator: " · ")
 
@@ -448,13 +586,20 @@ struct CodexAppServerRateLimitParser: Sendable {
             secondaryWindow: secondary,
             credits: credits,
             resetAllowance: resetAllowance,
+            accountIdentity: accountIdentity,
             sourceKind: .localCodexSession,
-            sourceDisplayName: "本机 Codex app-server（实验性）",
-            confidence: .verified,
+            sourceDisplayName: "本机 Codex 登录",
+            confidence: primary == nil && secondary == nil ? .medium : .verified,
             fieldCompleteness: completeness,
             expiresAt: now.addingTimeInterval(300),
-            diagnosticMessage: details.isEmpty ? "经用户授权复用本机 Codex 登录；应用未读取或保存 Token" : details
+            diagnosticMessage: details.isEmpty ? "经用户授权使用本机 Codex 登录读取额度；应用未读取或保存 Token" : details
         )
+    }
+
+    private func rateLimitCandidates(primary: RateLimitsValue, byLimitID: [String: RateLimitsValue]?) -> [RateLimitsValue] {
+        [primary] + (byLimitID?.values.sorted {
+            ($0.limitName ?? $0.limitId ?? "") < ($1.limitName ?? $1.limitId ?? "")
+        } ?? [])
     }
 
     private func makeCredits(_ value: CreditsSnapshot?) -> CreditsUsage? {
@@ -465,7 +610,7 @@ struct CodexAppServerRateLimitParser: Sendable {
 
     private func makeResetAllowance(_ value: ResetCreditsSnapshot?) -> UsageResetAllowance? {
         guard let value else { return nil }
-        let credits = value.credits.map {
+        let credits = (value.credits ?? []).map {
             UsageResetCredit(
                 resetType: $0.resetType,
                 status: $0.status,
@@ -474,7 +619,7 @@ struct CodexAppServerRateLimitParser: Sendable {
                 title: $0.title
             )
         }
-        return UsageResetAllowance(availableCount: value.availableCount, credits: credits)
+        return UsageResetAllowance(availableCount: value.availableCount ?? 0, credits: credits)
     }
 
     private func makeWindow(_ value: RateWindow?, kind: UsageWindowKind) -> UsageLimitWindow? {
@@ -549,11 +694,46 @@ private struct AccountResponse: Decodable {
 
 private struct AccountResult: Decodable {
     let account: LocalCodexAccount?
+    let requiresOpenaiAuth: Bool?
 }
 
 private struct LocalCodexAccount: Decodable {
     let type: String
+    let email: String?
+    let accountID: String?
     let planType: String?
+
+    enum CodingKeys: String, CodingKey {
+        case type, email, planType
+        case accountID
+        case accountId
+        case accountIDSnake = "account_id"
+        case providerAccountID
+        case providerAccountIDSnake = "provider_account_id"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        type = try container.decode(String.self, forKey: .type)
+        email = try? container.decodeIfPresent(String.self, forKey: .email)
+        planType = try? container.decodeIfPresent(String.self, forKey: .planType)
+        accountID = Self.firstString(
+            in: container,
+            keys: [.accountID, .accountId, .accountIDSnake, .providerAccountID, .providerAccountIDSnake]
+        )
+    }
+
+    private static func firstString(
+        in container: KeyedDecodingContainer<CodingKeys>,
+        keys: [CodingKeys]
+    ) -> String? {
+        for key in keys {
+            if let value = try? container.decodeIfPresent(String.self, forKey: key) {
+                return value
+            }
+        }
+        return nil
+    }
 }
 
 private struct RateLimitsResponse: Decodable {
@@ -562,12 +742,28 @@ private struct RateLimitsResponse: Decodable {
 
 private struct RateLimitsResult: Decodable {
     let rateLimits: RateLimitsValue?
+    let rateLimitsByLimitId: [String: RateLimitsValue]?
     let rateLimitResetCredits: ResetCreditsSnapshot?
+
+    enum CodingKeys: String, CodingKey {
+        case rateLimits
+        case rateLimitsByLimitId
+        case rateLimitsByLimitIdSnake = "rate_limits_by_limit_id"
+        case rateLimitResetCredits
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        rateLimits = try? container.decodeIfPresent(RateLimitsValue.self, forKey: .rateLimits)
+        rateLimitsByLimitId = (try? container.decodeIfPresent([String: RateLimitsValue].self, forKey: .rateLimitsByLimitId))
+            ?? (try? container.decodeIfPresent([String: RateLimitsValue].self, forKey: .rateLimitsByLimitIdSnake))
+        rateLimitResetCredits = try? container.decodeIfPresent(ResetCreditsSnapshot.self, forKey: .rateLimitResetCredits)
+    }
 }
 
 private struct ResetCreditsSnapshot: Decodable {
-    let availableCount: Int
-    let credits: [ResetCreditSnapshot]
+    let availableCount: Int?
+    let credits: [ResetCreditSnapshot]?
 }
 
 private struct ResetCreditSnapshot: Decodable {
@@ -587,6 +783,37 @@ private struct RateLimitsValue: Decodable {
     let limitName: String?
     let planType: String?
     let rateLimitReachedType: String?
+
+    enum CodingKeys: String, CodingKey {
+        case primary, secondary, credits
+        case individualLimit
+        case individualLimitSnake = "individual_limit"
+        case limitId
+        case limitIdSnake = "limit_id"
+        case limitName
+        case limitNameSnake = "limit_name"
+        case planType
+        case planTypeSnake = "plan_type"
+        case rateLimitReachedType
+        case rateLimitReachedTypeSnake = "rate_limit_reached_type"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        primary = try? container.decodeIfPresent(RateWindow.self, forKey: .primary)
+        secondary = try? container.decodeIfPresent(RateWindow.self, forKey: .secondary)
+        credits = try? container.decodeIfPresent(CreditsSnapshot.self, forKey: .credits)
+        individualLimit = (try? container.decodeIfPresent(SpendControlLimitSnapshot.self, forKey: .individualLimit))
+            ?? (try? container.decodeIfPresent(SpendControlLimitSnapshot.self, forKey: .individualLimitSnake))
+        limitId = (try? container.decodeIfPresent(String.self, forKey: .limitId))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .limitIdSnake))
+        limitName = (try? container.decodeIfPresent(String.self, forKey: .limitName))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .limitNameSnake))
+        planType = (try? container.decodeIfPresent(String.self, forKey: .planType))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .planTypeSnake))
+        rateLimitReachedType = (try? container.decodeIfPresent(String.self, forKey: .rateLimitReachedType))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .rateLimitReachedTypeSnake))
+    }
 }
 
 private struct CreditsSnapshot: Decodable {
@@ -596,10 +823,35 @@ private struct CreditsSnapshot: Decodable {
 }
 
 private struct SpendControlLimitSnapshot: Decodable {
-    let limit: String
-    let remainingPercent: Int
-    let resetsAt: Int64
-    let used: String
+    let limit: Double?
+    let remainingPercent: Double?
+    let resetsAt: Int64?
+    let used: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case limit
+        case remainingPercent
+        case remainingPercentSnake = "remaining_percent"
+        case resetsAt
+        case resetsAtSnake = "resets_at"
+        case used
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        limit = Self.decodeDouble(container, .limit)
+        remainingPercent = Self.decodeDouble(container, .remainingPercent)
+            ?? Self.decodeDouble(container, .remainingPercentSnake)
+        resetsAt = (try? container.decodeIfPresent(Int64.self, forKey: .resetsAt))
+            ?? (try? container.decodeIfPresent(Int64.self, forKey: .resetsAtSnake))
+        used = Self.decodeDouble(container, .used)
+    }
+
+    private static func decodeDouble(_ container: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys) -> Double? {
+        if let value = try? container.decodeIfPresent(Double.self, forKey: key) { return value }
+        if let value = try? container.decodeIfPresent(String.self, forKey: key) { return Double(value) }
+        return nil
+    }
 }
 
 private struct RateWindow: Decodable {

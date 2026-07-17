@@ -8,21 +8,13 @@ struct CodexUsageMonitorApp: App {
     @State private var container = DependencyContainer()
 
     var body: some Scene {
-        MenuBarExtra {
-            MenuPanelView(monitor: container.monitoring)
-                .environment(container.webSession)
-        } label: {
-            MenuBarLabel(snapshot: container.monitoring.snapshot, now: container.monitoring.now)
-        }
-        .menuBarExtraStyle(.window)
-
         Window("Codex Usage", id: "dashboard") {
             DashboardView(monitor: container.monitoring, history: container.history)
                 .environment(container.webSession)
                 .modelContainer(container.history.container)
                 .frame(minWidth: 720, minHeight: 520)
         }
-        .defaultSize(width: 860, height: 620)
+        .defaultSize(width: 960, height: 680)
 
         Window("Codex Usage 登录", id: "login") {
             LoginView().environment(container.webSession).frame(minWidth: 760, minHeight: 600)
@@ -35,13 +27,11 @@ struct CodexUsageMonitorApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         UserDefaults.standard.register(defaults: [
-            "smartRefresh": true, "notificationsEnabled": false,
+            UsageMonitoringService.refreshIntervalPreferenceKey: AutoRefreshFrequency.defaultValue.rawValue,
+            "notificationsEnabled": false,
             "notifyEvery20": true, "notifyReset": true,
-            LocalCodexSessionAuthorization.preferenceKey: false,
-            LocalCodexSessionAuthorization.allowCustomExecutableKey: false,
-            "officialWebAnalyticsEnrichment": false,
             LocalRealtimeTokenAuthorization.preferenceKey: false,
-            "activeRefreshSeconds": 60, "idleRefreshSeconds": 300, "retentionDays": 30
+            "retentionDays": 30
         ])
         NSApp.setActivationPolicy(UserDefaults.standard.bool(forKey: "showDockIcon") ? .regular : .accessory)
         Task { @MainActor in

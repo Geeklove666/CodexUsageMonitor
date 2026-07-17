@@ -33,11 +33,15 @@ RESOURCE_BUNDLE="$PRODUCTS_DIR/CodexUsageMonitor_CodexUsageMonitor.bundle"
 DIST_DIR="$ROOT_DIR/Dist"
 WORK_DIR="$DIST_DIR/.package-work"
 APP_PATH="$DIST_DIR/$APP_NAME.app"
-DMG_NAME="Codex-Usage-Monitor-$VERSION-universal.dmg"
+if [[ "$SIGNING_IDENTITY" == "-" ]]; then
+  DMG_NAME="Codex-Usage-Monitor-$VERSION-local-test-apple-silicon.dmg"
+else
+  DMG_NAME="Codex-Usage-Monitor-$VERSION-apple-silicon.dmg"
+fi
 DMG_PATH="$DIST_DIR/$DMG_NAME"
 
-echo "Building Universal 2 release for macOS 14+..."
-swift build -c release --arch arm64 --arch x86_64 --jobs "${BUILD_JOBS:-2}"
+echo "Building Apple Silicon release for macOS 15+..."
+swift build -c release --arch arm64 --jobs "${BUILD_JOBS:-2}"
 
 if [[ ! -x "$EXECUTABLE" || ! -d "$RESOURCE_BUNDLE" ]]; then
   echo "Release products are incomplete." >&2
@@ -57,7 +61,7 @@ ditto "$ROOT_DIR/CodexUsageMonitor/Resources/PrivacyInfo.xcprivacy" "$APP_PATH/C
 /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $EXECUTABLE_NAME" "$APP_PATH/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP_PATH/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP_PATH/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion 14.0" "$APP_PATH/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion 15.0" "$APP_PATH/Contents/Info.plist"
 
 chmod 755 "$APP_PATH/Contents/MacOS/$EXECUTABLE_NAME"
 xattr -cr "$APP_PATH"
@@ -99,8 +103,21 @@ if [[ -n "${NOTARY_PROFILE:-}" && "$SIGNING_IDENTITY" != "-" ]]; then
   spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG_PATH"
 fi
 
+if [[ "$SIGNING_IDENTITY" == "-" ]]; then
+  echo "警告：这是 ad-hoc 签名的本机测试包，不能作为可分享发行版。" >&2
+  echo "其他 Mac 的 Gatekeeper 可能拒绝启动；正式分发必须使用 Developer ID 并完成公证。" >&2
+fi
+
 ARCHS="$(lipo -archs "$APP_PATH/Contents/MacOS/$EXECUTABLE_NAME")"
 MIN_VERSIONS="$(otool -l "$APP_PATH/Contents/MacOS/$EXECUTABLE_NAME" | awk '/LC_BUILD_VERSION/{found=1;next} found&&/minos/{print $2;found=0}' | sort -u | tr '\n' ' ')"
+if [[ "$ARCHS" != "arm64" ]]; then
+  echo "架构校验失败：正式构建必须仅包含 arm64，实际为 $ARCHS" >&2
+  exit 3
+fi
+if [[ "$MIN_VERSIONS" != "15.0 " && "$MIN_VERSIONS" != "15.0" ]]; then
+  echo "最低系统版本校验失败：预期 15.0，实际为 $MIN_VERSIONS" >&2
+  exit 3
+fi
 shasum -a 256 "$DMG_PATH" > "$DMG_PATH.sha256"
 rm -rf "$WORK_DIR"
 

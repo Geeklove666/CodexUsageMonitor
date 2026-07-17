@@ -48,12 +48,17 @@ enum SubscriptionTierFormatter {
             .replacingOccurrences(of: "-", with: " ")
 
         switch normalized {
-        case "free": return "0$ Free"
-        case "plus": return "20$ Plus 订阅"
-        case "pro", "prolite", "pro 5x": return "100$ Pro 订阅"
+        case "free": return "$0 Free"
+        case "go": return "$8 Go 订阅"
+        case "plus": return "$20 Plus 订阅"
+        case "pro": return "$200 Pro 20x 订阅"
+        case "prolite", "pro 5x": return "$100 Pro 5x 订阅"
+        case "pro 20x": return "$200 Pro 20x 订阅"
         default:
             if let multiplier = proMultiplier(in: normalized) {
-                return "\(multiplier * 20)$ Pro 订阅"
+                if multiplier >= 20 { return "$200 Pro 20x 订阅" }
+                if multiplier >= 5 { return "$100 Pro 5x 订阅" }
+                return "Pro \(multiplier)x 订阅"
             }
             let readable = planName.replacingOccurrences(of: "_", with: " ")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -103,7 +108,7 @@ enum TokenMilestoneFormatter {
 
     static func todayMessage(tokens: Int64) -> String {
         let goals = Double(max(0, tokens)) / Double(smallGoal)
-        let value = goals.formatted(.number.precision(.fractionLength(0...3)))
+        let value = goals.formatted(.number.precision(.fractionLength(0...2)))
         return "今天已经花掉了 \(value) 个小目标"
     }
 

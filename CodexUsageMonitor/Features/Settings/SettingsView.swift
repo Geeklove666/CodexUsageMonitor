@@ -5,16 +5,15 @@ struct SettingsView: View {
     let history: UsageHistoryStore
     let monitor: UsageMonitoringService
     @Environment(WebViewSession.self) private var session
+    @Environment(\.openWindow) private var openWindow
     @AppStorage("showDockIcon") private var showDockIcon = false
-    @AppStorage("smartRefresh") private var smartRefresh = true
+    @AppStorage(UsageMonitoringService.refreshIntervalPreferenceKey) private var autoRefreshSeconds = AutoRefreshFrequency.defaultValue.rawValue
     @AppStorage("notificationsEnabled") private var notifications = false
     @AppStorage("retentionDays") private var retentionDays = 30
     @AppStorage("debugMode") private var debugMode = false
     @AppStorage("notifyEvery20") private var notifyEvery20 = true
     @AppStorage("notifyReset") private var notifyReset = true
-    @AppStorage(LocalCodexSessionAuthorization.preferenceKey) private var reuseLocalCodexLogin = false
-    @AppStorage(LocalCodexSessionAuthorization.allowCustomExecutableKey) private var allowCustomCodexExecutable = false
-    @AppStorage("officialWebAnalyticsEnrichment") private var officialWebAnalyticsEnrichment = false
+    @AppStorage(LocalCodexSessionAuthorization.preferenceKey) private var localCodexLogin = false
     @AppStorage(LocalRealtimeTokenAuthorization.preferenceKey) private var localRealtimeTokenUsage = false
     @State private var message: String?
     @State private var selection: SettingsSection = .general
@@ -24,6 +23,7 @@ struct SettingsView: View {
     @State private var notificationAuthorization: NotificationAuthorizationState = .unknown
     @State private var launchAtLoginState: LaunchAtLoginService.State = .disabled
     @State private var launchAtLoginError: String?
+    @State private var localCodexStatus: LocalCodexLoginStatus = .unavailable("尚未检查")
 
     var body: some View {
         ZStack {
@@ -49,16 +49,6 @@ struct SettingsView: View {
             }
         }
         .frame(minWidth: 640, idealWidth: 720, minHeight: 500, idealHeight: 560)
-        .alert("授权复用本机 Codex 登录？", isPresented: $showsLocalCodexConsent) {
-            Button("授权并启用") {
-                reuseLocalCodexLogin = true
-                message = "已授权实验性数据源"
-                Task { await monitor.refresh() }
-            }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("应用将启动本机 Codex 官方 app-server，读取套餐、额度、每日 Token 与账户使用摘要。应用不会读取、复制或保存 auth.json 中的 Token，也不会读取对话或代码内容。此接口仍处于实验阶段，可能随 Codex 更新而变化。")
-        }
         .alert("允许读取本机实时 Token 事件？", isPresented: $showsRealtimeTokenConsent) {
             Button("授权并启用") {
                 localRealtimeTokenUsage = true
@@ -67,6 +57,18 @@ struct SettingsView: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("应用只扫描 ~/.codex/sessions 中结构化的 token_count 事件及时间戳，用于计算这台 Mac 今天的 Token 消耗；不会提取或保存提示词、代码、工具输出、文件路径或消息正文。可随时在此撤销授权。")
+        }
+        .alert("允许使用本机 Codex 登录读取额度？", isPresented: $showsLocalCodexConsent) {
+            Button("授权并刷新") {
+                localCodexLogin = true
+                Task {
+                    await refreshLocalCodexStatus()
+                    await monitor.refresh()
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("应用会调用 OpenAI 签名的本机 codex 命令，通过 Codex 登录会话读取额度数据；不会直接读取 auth.json，也不会保存 Token。该链路依赖 Codex app-server，本应用会在界面中标明数据来源并保留官方网页登录作为回退。")
         }
         .alert("清除全部本地数据？", isPresented: $showsClearAllConfirmation) {
             Button("确认清除", role: .destructive) {
@@ -79,11 +81,12 @@ struct SettingsView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("这会清除历史、网页登录状态、本机 Codex 与实时 Token 授权。下次刷新需要重新确认授权。")
+            Text("这会清除历史、OpenAI 网页登录状态、本机 Codex 授权与实时 Token 授权。下次刷新需要重新登录或重新授权。")
         }
         .task {
             notificationAuthorization = await NotificationService().authorizationState()
             refreshLaunchAtLoginState()
+            await refreshLocalCodexStatus()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             refreshLaunchAtLoginState()
@@ -107,8 +110,7 @@ struct SettingsView: View {
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 10)
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .bottom) { Divider().opacity(0.25) }
+        .liquidGlassSurface(cornerRadius: 18)
     }
 
     private var generalSettings: some View {
@@ -118,8 +120,15 @@ struct SettingsView: View {
                     Toggle("", isOn: $showDockIcon).labelsHidden()
                 }
                 rowDivider
-                SettingsRow(symbol: "clock.arrow.circlepath", color: AppleUI.purple, title: "智能刷新", detail: "根据活跃状态调整刷新频率") {
-                    Toggle("", isOn: $smartRefresh).labelsHidden()
+                SettingsRow(symbol: "clock.arrow.circlepath", color: AppleUI.purple,
+                            title: "自动刷新频率", detail: selectedRefreshFrequency.detail) {
+                    Picker("自动刷新频率", selection: refreshFrequencyBinding) {
+                        ForEach(AutoRefreshFrequency.allCases) { frequency in
+                            Text(frequency.label).tag(frequency.rawValue)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 110)
                 }
                 rowDivider
                 SettingsRow(symbol: "power.circle.fill", color: AppleUI.success,
@@ -196,71 +205,70 @@ struct SettingsView: View {
             AppleCard {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(alignment: .top, spacing: 14) {
-                        SymbolTile(symbol: "terminal.fill", color: AppleUI.warning)
+                        SymbolTile(symbol: "terminal.fill", color: AppleUI.accent)
                         VStack(alignment: .leading, spacing: 5) {
-                            HStack(spacing: 8) {
-                                Text("复用本机 Codex 登录").font(.body.weight(.semibold))
-                                Text("实验性").font(.caption.weight(.semibold)).foregroundStyle(AppleUI.warning)
-                                    .padding(.horizontal, 7).padding(.vertical, 3)
-                                    .background(AppleUI.warning.opacity(0.12), in: Capsule())
-                            }
-                            Text("通过 Codex 官方 app-server 读取额度、近 30 天 Token 与账户使用摘要；不会直接读取 auth.json 或接触 Token。")
+                            Text("本机 Codex 登录").font(.body.weight(.semibold))
+                            Text("优先使用这台 Mac 已登录的 Codex 额度数据；仅调用 OpenAI 签名的 codex 命令，不直接读取或保存 Token。")
                                 .font(.subheadline).foregroundStyle(.secondary)
                         }
                         Spacer(minLength: 12)
-                        Toggle("", isOn: localCodexAuthorizationBinding).labelsHidden()
-                            .help("主动授权或撤销本机 Codex 登录复用")
+                        Toggle("", isOn: localCodexAuthorizationBinding)
+                            .labelsHidden()
+                            .help("授权或撤销本机 Codex 额度读取")
                     }
 
                     Divider().opacity(0.28).padding(.vertical, 13)
 
-                    Label(localCodexStatusText, systemImage: localCodexStatusSymbol)
+                    Label(localCodexStatus.label, systemImage: localCodexStatusSymbol)
                         .font(.subheadline)
                         .foregroundStyle(localCodexStatusColor)
-                        .accessibilityLabel(localCodexStatusText)
+                        .accessibilityLabel(localCodexStatus.label)
+
+                    Divider().opacity(0.28).padding(.vertical, 13)
+
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 10) { localCodexButtons }
+                        VStack(spacing: 10) { localCodexButtons }
+                    }
+                }
+            }
+
+            AppleCard {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(alignment: .top, spacing: 14) {
+                        SymbolTile(symbol: "safari.fill", color: AppleUI.accent)
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("OpenAI 官方页面登录").font(.body.weight(.semibold))
+                            Text("额度与工作区分析均由本应用隔离的 WebKit 会话读取；登录 Cookie 和凭据不会暴露给应用代码。")
+                                .font(.subheadline).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 12)
+                        Button("打开登录") {
+                            openWindow(id: "login")
+                            session.openUsagePage()
+                            NSApp.activate()
+                        }
+                        .buttonStyle(GlassButtonStyle())
+                    }
+
+                    Divider().opacity(0.28).padding(.vertical, 13)
+
+                    Label(officialPageStatusText, systemImage: officialPageStatusSymbol)
+                        .font(.subheadline)
+                        .foregroundStyle(officialPageStatusColor)
+                        .accessibilityLabel(officialPageStatusText)
 
                     Divider().opacity(0.28).padding(.vertical, 13)
 
                     SettingsRow(symbol: "bolt.horizontal.circle.fill", color: AppleUI.accent,
                                 title: "本机实时今日 Token", detail: "仅汇总 Codex token_count 事件；不读取会话正文") {
                         Toggle("", isOn: realtimeTokenAuthorizationBinding).labelsHidden()
-                            .disabled(!reuseLocalCodexLogin)
                             .help("授权或撤销本机实时 Token 统计")
-                    }
-                    Divider().opacity(0.28).padding(.vertical, 13)
-
-                    HStack(alignment: .top, spacing: 14) {
-                        SymbolTile(symbol: "safari.fill", color: AppleUI.accent)
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text("官方页面登录").font(.body.weight(.semibold))
-                            Text("备用数据源。登录状态保存在本应用隔离的 WebKit 存储中，并用于补充 Analytics。")
-                                .font(.subheadline).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Text("备用").font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                    }
-
-                    Divider().opacity(0.28).padding(.vertical, 13)
-
-                    SettingsRow(symbol: "chart.bar.doc.horizontal", color: AppleUI.purple,
-                                title: "补充工作区 Analytics", detail: "仅在已应用内登录时加载官方分析页面") {
-                        Toggle("", isOn: $officialWebAnalyticsEnrichment).labelsHidden()
-                            .onChange(of: officialWebAnalyticsEnrichment) { _, enabled in
-                                if enabled { session.openUsagePage() }
-                                Task { await monitor.refresh() }
-                            }
-                    }
-
-                    Divider().opacity(0.28).padding(.leading, 44)
-
-                    SettingsRow(symbol: "terminal", color: AppleUI.warning,
-                                title: "允许自定义 Codex CLI", detail: "高级选项：允许执行 PATH 或 CODEX_CLI_PATH 中的命令") {
-                        Toggle("", isOn: $allowCustomCodexExecutable).labelsHidden()
                     }
                 }
             }
 
-            Text("应用默认优先复用本机 Codex 登录；首次使用仍需主动授权。若本机 Codex 未登录、版本不支持或读取失败，会自动回退到官方页面，再依次使用缓存与本地估算。")
+            Text("启用本机 Codex 后会优先读取这台 Mac 的 Codex 额度；不可用时回退到 OpenAI 官方页面、最近有效缓存与本地趋势估算。本机 Token 统计是独立授权，不参与登录。")
                 .font(.caption).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 4)
@@ -322,17 +330,16 @@ struct SettingsView: View {
         launchAtLoginState = LaunchAtLoginService().state
     }
 
-    private var localCodexAuthorizationBinding: Binding<Bool> {
+    private var selectedRefreshFrequency: AutoRefreshFrequency {
+        AutoRefreshFrequency(rawValue: autoRefreshSeconds) ?? .defaultValue
+    }
+
+    private var refreshFrequencyBinding: Binding<Int> {
         Binding {
-            reuseLocalCodexLogin
-        } set: { enabled in
-            if enabled {
-                showsLocalCodexConsent = true
-            } else {
-                reuseLocalCodexLogin = false
-                message = "已撤销本机 Codex 登录复用授权"
-                Task { await monitor.refresh() }
-            }
+            AutoRefreshFrequency.sanitizedSeconds(autoRefreshSeconds)
+        } set: { newValue in
+            autoRefreshSeconds = AutoRefreshFrequency.sanitizedSeconds(newValue)
+            monitor.restartRefreshLoop()
         }
     }
 
@@ -349,26 +356,78 @@ struct SettingsView: View {
         }
     }
 
-    private var localCodexAvailable: Bool { CodexExecutableLocator().locate() != nil }
+    private var localCodexAuthorizationBinding: Binding<Bool> {
+        Binding {
+            localCodexLogin
+        } set: { enabled in
+            if enabled {
+                showsLocalCodexConsent = true
+            } else {
+                localCodexLogin = false
+                Task {
+                    await refreshLocalCodexStatus()
+                    await monitor.refresh()
+                }
+            }
+        }
+    }
 
-    private var localCodexStatusText: String {
-        if !localCodexAvailable { return "未找到支持 app-server 的本机 Codex" }
-        if !reuseLocalCodexLogin { return "已找到本机 Codex · 默认未授权" }
-        return monitor.snapshot.sourceKind == .localCodexSession
-            ? "已授权 · 当前正在使用本机 Codex"
-            : "已授权 · 当前未使用，读取失败时会自动回退"
+    @ViewBuilder private var localCodexButtons: some View {
+        Button {
+            Task { await refreshLocalCodexStatus() }
+        } label: {
+            Label("检查登录状态", systemImage: "checkmark.shield")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(GlassButtonStyle())
+
+        Button {
+            Task {
+                do {
+                    try await LocalCodexLoginProbe().startLogin()
+                    message = "已打开 Codex 登录流程"
+                    await refreshLocalCodexStatus()
+                } catch {
+                    message = "无法打开 Codex 登录：\(SensitiveDataRedactor().redact(error.localizedDescription))"
+                }
+            }
+        } label: {
+            Label("打开 Codex 登录", systemImage: "person.crop.circle")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(GlassButtonStyle())
+    }
+
+    private func refreshLocalCodexStatus() async {
+        localCodexStatus = await LocalCodexLoginProbe().status()
     }
 
     private var localCodexStatusSymbol: String {
-        if !localCodexAvailable { return "exclamationmark.triangle.fill" }
-        if !reuseLocalCodexLogin { return "lock.fill" }
-        return monitor.snapshot.sourceKind == .localCodexSession ? "checkmark.shield.fill" : "arrow.uturn.down.circle.fill"
+        switch localCodexStatus {
+        case .loggedIn: "checkmark.shield.fill"
+        case .loggedOut: "person.crop.circle.badge.exclamationmark"
+        case .unavailable: "exclamationmark.triangle.fill"
+        }
     }
 
     private var localCodexStatusColor: Color {
-        if !localCodexAvailable { return AppleUI.warning }
-        if !reuseLocalCodexLogin { return .secondary }
-        return monitor.snapshot.sourceKind == .localCodexSession ? AppleUI.success : AppleUI.warning
+        switch localCodexStatus {
+        case .loggedIn: AppleUI.success
+        case .loggedOut, .unavailable: AppleUI.warning
+        }
+    }
+
+    private var officialPageStatusText: String {
+        if session.hasLoadedUsagePage { return "已登录 · OpenAI 官方页面数据可用" }
+        return "需要在应用内完成 OpenAI 登录"
+    }
+
+    private var officialPageStatusSymbol: String {
+        session.hasLoadedUsagePage ? "checkmark.shield.fill" : "person.crop.circle.badge.exclamationmark"
+    }
+
+    private var officialPageStatusColor: Color {
+        session.hasLoadedUsagePage ? AppleUI.success : AppleUI.warning
     }
 
     private func notificationRow(_ title: String, symbol: String, binding: Binding<Bool>) -> some View {
@@ -396,8 +455,6 @@ struct SettingsView: View {
 
     private func clearOrdinarySettings() {
         UserDefaults.standard.removeObject(forKey: LocalCodexSessionAuthorization.preferenceKey)
-        UserDefaults.standard.removeObject(forKey: LocalCodexSessionAuthorization.allowCustomExecutableKey)
-        UserDefaults.standard.removeObject(forKey: "officialWebAnalyticsEnrichment")
         UserDefaults.standard.removeObject(forKey: LocalRealtimeTokenAuthorization.preferenceKey)
         for key in UserDefaults.standard.dictionaryRepresentation().keys
             where key.hasPrefix("notified.") || key.hasPrefix("consumption.") {
