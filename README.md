@@ -11,7 +11,7 @@
 > [!IMPORTANT]
 > 本项目是独立开发的非官方工具，与 OpenAI 无隶属、授权或背书关系。Codex、ChatGPT 及 OpenAI 是其各自权利人的商标。
 
-当前版本：**2.0.17（Build 49）**  
+当前版本：**2.0.27（Build 59）**  
 系统要求：**macOS 15 Sequoia 至 macOS 27 测试版**  
 架构：**Apple Silicon（arm64）**
 
@@ -19,10 +19,11 @@
 
 - 菜单栏实时显示 Codex 主额度剩余比例和重置倒计时；
 - 菜单栏弹窗展示主额度、Credits、使用限制重置次数、今日 Token 与数据来源状态；
-- Credits 剩余额度统一保留两位小数；
+- Credits 剩余额度按整数显示，避免长小数干扰菜单栏可读性；
+- 今日 Token 的“小目标”换算最多保留两位小数；
 - 完整 Dashboard 提供 Overview、Usage History、Alerts、Data Source、Settings 五个页面，并默认展示当前真实监控快照；
 - 支持本机 Codex 登录数据源，优先读取这台 Mac 已登录的 Codex 额度信息；
-- 支持本机 Codex 子额度、账号身份与 Credits fallback 解析，账号/套餐切换时减少旧缓存误用；
+- 支持本机 Codex app-server 额度、账号身份、Credits、重置次数和临时失败重试；
 - 启用本机 Codex 后可直接从菜单栏刷新本机额度，不会重复打开网页登录流程；
 - 支持应用内 OpenAI 官方页面登录作为回退数据源；
 - 支持本机实时今日 Token 统计，只读取结构化 `token_count` 事件；
@@ -74,11 +75,13 @@
 ## 安装
 
 1. 从 GitHub Release 下载最新 DMG；
-2. 打开 DMG，将 **Codex Usage Monitor** 拖入 **Applications**；
-3. 启动后点击菜单栏 `Codex` 状态项；
-4. 如需本机 Codex 数据源，点击“Codex 登录”并确认本机 Codex 已登录；
-5. 如需官方页面回退数据源，点击“OpenAI 登录”并在应用内页面完成登录；
-6. 返回菜单栏点击“刷新”。
+2. 先退出正在运行的旧版 Codex Usage Monitor；
+3. 打开 DMG，将 **Codex Usage Monitor** 拖入 **Applications**；
+4. 如果 Finder 提示已存在同名 App，选择“替换”，否则系统可能继续打开旧版；
+5. 启动后点击菜单栏 `Codex` 状态项；
+6. 如需本机 Codex 数据源，点击“Codex 登录”并确认本机 Codex 已登录；
+7. 如需官方页面回退数据源，点击“OpenAI 登录”并在应用内页面完成登录；
+8. 返回菜单栏点击“刷新”。
 
 正式对外分发包需要 Developer ID Application 签名与 Apple 公证。仓库中本地测试包会标记为 `local-test`，仅用于开发验证。
 
