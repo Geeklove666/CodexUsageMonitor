@@ -25,7 +25,9 @@ actor CachedSnapshotDataSource: CodexUsageDataSource {
     static func cachedSnapshot(from snapshot: CodexUsageSnapshot, now: Date = .now,
                                maximumAge: TimeInterval = 3_600) throws -> CodexUsageSnapshot {
         let age = now.timeIntervalSince(snapshot.fetchedAt)
-        guard age <= maximumAge, snapshot.primaryWindow?.resetsAt.map({ $0 > now }) ?? true else { throw UsageMonitorError.staleData }
+        let resetDates = [snapshot.primaryWindow?.resetsAt, snapshot.secondaryWindow?.resetsAt].compactMap { $0 }
+        let hasExpiredResetWindow = resetDates.contains { $0 <= now }
+        guard age <= maximumAge, !hasExpiredResetWindow else { throw UsageMonitorError.staleData }
         return CodexUsageSnapshot(fetchedAt: snapshot.fetchedAt, sourceUpdatedAt: snapshot.sourceUpdatedAt,
             planName: snapshot.planName, primaryWindow: snapshot.primaryWindow, secondaryWindow: snapshot.secondaryWindow,
             credits: snapshot.credits, resetAllowance: snapshot.resetAllowance, analytics: snapshot.analytics,

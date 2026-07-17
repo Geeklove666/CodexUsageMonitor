@@ -19,6 +19,7 @@ final class UsageMonitoringService {
     private var activeRefreshForceRefresh = false
     private var refreshGeneration: UInt64 = 0
     private var analyticsTask: Task<Void, Never>?
+    private var resetBoundaryTask: Task<Void, Never>?
     private var failures = 0
     private var lastMenuOpenAt: Date?
 
@@ -118,7 +119,8 @@ final class UsageMonitoringService {
                     self.logger.info("Quota refresh succeeded via \(quota.sourceKind.rawValue, privacy: .public)")
                 }
                 await self.persistAndNotify(previous: previous, current: quota)
-                self.startAnalyticsEnrichment(for: quota)
+                self.scheduleResetBoundaryRefresh(for: quota)
+                self.startAnalyticsEnrichment(for: quota, generation: generation)
             } catch {
                 if let realtime = await realtimeValue {
                     self.snapshot = self.snapshot.mergingAnalytics(realtime)
@@ -142,11 +144,17 @@ final class UsageMonitoringService {
         }
     }
 
-    private func startAnalyticsEnrichment(for quota: CodexUsageSnapshot) {
+    private func startAnalyticsEnrichment(for quota: CodexUsageSnapshot, generation: UInt64) {
         analyticsTask = Task { [weak self] in
             guard let self else { return }
             let enriched = await self.repository.fetchAnalytics(for: quota)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled,
+                  self.refreshGeneration == generation,
+                  self.snapshot.id == quota.id
+            else {
+                self.logger.info("Discarded stale analytics enrichment")
+                return
+            }
             if let analytics = enriched.analytics {
                 self.snapshot = self.snapshot.mergingAnalytics(analytics)
             }
@@ -159,6 +167,25 @@ final class UsageMonitoringService {
                 self.persistenceWarning = "历史保存失败：\(SensitiveDataRedactor().redact(error.localizedDescription))"
             }
             self.diagnostic = await self.repository.currentDiagnostic()
+        }
+    }
+
+    private func scheduleResetBoundaryRefresh(for snapshot: CodexUsageSnapshot) {
+        resetBoundaryTask?.cancel()
+        guard !snapshot.isCached, !snapshot.isEstimated else { return }
+        let now = Date.now
+        let resetDates = [snapshot.primaryWindow?.resetsAt, snapshot.secondaryWindow?.resetsAt]
+            .compactMap { $0 }
+            .filter { $0 > now }
+        guard let nextReset = resetDates.min() else { return }
+        let delay = max(5, nextReset.timeIntervalSince(now) + 5)
+        resetBoundaryTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.now = .now
+            }
+            await self?.refresh(reason: "额度重置边界", forceRefresh: false)
         }
     }
 
@@ -175,8 +202,8 @@ final class UsageMonitoringService {
     }
 
     func cancel() {
-        loopTask?.cancel(); refreshTask?.cancel(); analyticsTask?.cancel()
-        loopTask = nil; refreshTask = nil; analyticsTask = nil
+        loopTask?.cancel(); refreshTask?.cancel(); analyticsTask?.cancel(); resetBoundaryTask?.cancel()
+        loopTask = nil; refreshTask = nil; analyticsTask = nil; resetBoundaryTask = nil
     }
 
     private func shouldRefreshForMenuOpen(maxAge: TimeInterval) -> Bool {

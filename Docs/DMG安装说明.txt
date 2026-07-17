@@ -6,9 +6,12 @@ Codex Usage Monitor 安装说明
 • 仅支持 Apple Silicon（M 系列）Mac
 
 安装
-1. 将“Codex Usage Monitor”拖到旁边的 Applications 文件夹。
-2. 正式分享版经过 Developer ID 签名与 Apple 公证，前往“应用程序”正常打开即可。
-3. 文件名带 local-test 的包只供开发者本机验证，不应发送到其他 Mac。若确实在可信的内部测试中使用，可右键点按 App 选择“打开”，或在首次拦截后前往“系统设置 → 隐私与安全性”选择“仍要打开”。
+1. 先退出正在运行的旧版 Codex Usage Monitor。
+2. 将“Codex Usage Monitor”拖到旁边的 Applications 文件夹。
+3. 如果 Finder 提示已存在同名 App，必须选择“替换”。如果选择“保留两者”或取消，系统仍会打开旧版，刷新逻辑不会更新。
+4. 安装完成后只从“应用程序”里的 Codex Usage Monitor 打开，不要直接运行 DMG 窗口中的 App。
+5. 正式分享版经过 Developer ID 签名与 Apple 公证，前往“应用程序”正常打开即可。
+6. 文件名带 local-test 的包只供开发者本机验证，不应发送到其他 Mac。若确实在可信的内部测试中使用，可右键点按 App 选择“打开”，或在首次拦截后前往“系统设置 → 隐私与安全性”选择“仍要打开”。
 
 首次使用
 • 点击菜单栏中的 Codex 状态项。

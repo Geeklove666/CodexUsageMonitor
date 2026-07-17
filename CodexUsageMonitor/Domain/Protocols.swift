@@ -24,11 +24,6 @@ protocol RefreshCacheInvalidatingDataSource: Sendable {
     func invalidateRefreshCaches() async
 }
 
-protocol CodexUsageParser: Sendable {
-    var parserVersion: String { get }
-    func parse(payload: Data, response: URLResponse?) throws -> ParsedCodexUsage
-}
-
 protocol CodexUsageDOMParser: Sendable {
     var parserVersion: String { get }
     func parse(html: String) throws -> ParsedCodexUsage

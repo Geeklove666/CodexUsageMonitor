@@ -108,7 +108,7 @@ enum TokenMilestoneFormatter {
 
     static func todayMessage(tokens: Int64) -> String {
         let goals = Double(max(0, tokens)) / Double(smallGoal)
-        let value = goals.formatted(.number.precision(.fractionLength(0...3)))
+        let value = goals.formatted(.number.precision(.fractionLength(0...2)))
         return "今天已经花掉了 \(value) 个小目标"
     }
 

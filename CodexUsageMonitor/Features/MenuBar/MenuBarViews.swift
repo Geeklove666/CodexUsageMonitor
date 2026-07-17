@@ -39,37 +39,6 @@ enum MenuBarQuotaLevel: String, CaseIterable {
     }
 }
 
-struct MenuBarLabel: View {
-    let snapshot: CodexUsageSnapshot
-    let now: Date
-
-    var body: some View {
-        Text("Codex \(menuDetail)")
-            .fontWeight(.semibold)
-            .foregroundStyle(menuColor)
-            .accessibilityLabel(accessibilityLabel)
-    }
-
-    private var menuDetail: String {
-        guard let remaining = snapshot.primaryWindow?.remainingPercentage else { return "--%" }
-        let prefix = snapshot.isEstimated ? "≈" : ""
-        guard let reset = snapshot.primaryWindow?.resetsAt else { return "\(prefix)\(Int(remaining))%" }
-        guard reset > now else { return "\(prefix)\(Int(remaining))% · 已过期" }
-        return "\(prefix)\(Int(remaining))% · \(DurationFormatter.short(reset.timeIntervalSince(now)))"
-    }
-
-    private var quotaLevel: MenuBarQuotaLevel? {
-        snapshot.primaryWindow?.remainingPercentage.map(MenuBarQuotaLevel.init)
-    }
-
-    private var menuColor: Color { quotaLevel?.color ?? .primary }
-
-    private var accessibilityLabel: String {
-        guard let quotaLevel else { return "Codex，暂无额度数据" }
-        return "Codex，\(quotaLevel.accessibilityDescription)，\(menuDetail)"
-    }
-}
-
 struct MenuPanelView: View {
     @Bindable var monitor: UsageMonitoringService
     var openDashboardAction: (() -> Void)?
@@ -155,7 +124,7 @@ struct MenuPanelView: View {
     }
 
     private var progressSection: some View {
-        AppleCard(padding: 11, cornerRadius: 16, shadowRadius: 8, shadowY: 2) {
+        AppleCard(padding: 11, cornerRadius: 16, shadowRadius: 8, shadowY: 2, material: nil) {
             VStack(spacing: 9) {
                 UsageProgressRow(title: "主额度", window: monitor.snapshot.primaryWindow, now: monitor.now,
                                  color: primaryQuotaColor, isEstimated: monitor.snapshot.isEstimated)
@@ -300,33 +269,33 @@ struct MenuPanelView: View {
 private struct MenuPanelRootBackground: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 24, style: .continuous)
         ZStack {
             if reduceTransparency {
-                shape.fill(Color(nsColor: .windowBackgroundColor))
+                shape.fill(baseColor)
             } else {
-                shape.fill(.ultraThinMaterial)
+                shape.fill(baseColor)
                 shape.fill(
                     LinearGradient(
                         colors: [
-                            Color(nsColor: .systemOrange).opacity(0.18),
-                            Color(nsColor: .systemPink).opacity(0.16),
-                            Color(nsColor: .systemPurple).opacity(0.14),
-                            Color(nsColor: .systemBlue).opacity(0.12)
+                            Color(nsColor: .systemOrange).opacity(0.028),
+                            Color(nsColor: .systemPink).opacity(0.022),
+                            Color(nsColor: .systemPurple).opacity(0.020),
+                            Color(nsColor: .systemBlue).opacity(0.018)
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )
                 )
-                shape.fill(Color(nsColor: .controlBackgroundColor).opacity(0.30))
             }
         }
         .overlay(alignment: .topLeading) {
             if !reduceTransparency {
                 Circle()
-                    .fill(Color.white.opacity(0.18))
+                    .fill(Color.white.opacity(0.035))
                     .blur(radius: 28)
                     .frame(width: 160, height: 160)
                     .offset(x: -42, y: -64)
@@ -336,7 +305,7 @@ private struct MenuPanelRootBackground: View {
         .overlay(alignment: .bottomTrailing) {
             if !reduceTransparency {
                 Circle()
-                    .fill(Color(nsColor: .systemBlue).opacity(0.10))
+                    .fill(Color(nsColor: .systemBlue).opacity(0.010))
                     .blur(radius: 32)
                     .frame(width: 180, height: 180)
                     .offset(x: 62, y: 76)
@@ -356,6 +325,12 @@ private struct MenuPanelRootBackground: View {
                     lineWidth: contrast == .increased ? 1 : 0.7
                 )
             }
+    }
+
+    private var baseColor: Color {
+        colorScheme == .dark
+            ? Color(red: 0.118, green: 0.118, blue: 0.125)
+            : Color(red: 0.965, green: 0.960, blue: 0.955)
     }
 }
 
@@ -413,21 +388,6 @@ private enum MenuPanelWindowConfigurationRegistry {
     static func markIfNeeded(windowNumber: Int) -> Bool {
         guard windowNumber > 0 else { return true }
         return configuredWindowNumbers.insert(windowNumber).inserted
-    }
-}
-
-struct AnalyticsSourceBadge: View {
-    let analytics: CodexAnalyticsSnapshot
-    var compact = false
-
-    var body: some View {
-        Label(analytics.sourceDisplayName, systemImage: "chart.bar.doc.horizontal")
-            .font((compact ? Font.caption2 : Font.caption).weight(.semibold))
-            .foregroundStyle(AppleUI.purple)
-            .padding(.horizontal, compact ? 7 : 9)
-            .padding(.vertical, compact ? 4 : 5)
-            .background(AppleUI.purple.opacity(0.10), in: Capsule())
-            .help("分析数据来源，与额度来源可能不同")
     }
 }
 

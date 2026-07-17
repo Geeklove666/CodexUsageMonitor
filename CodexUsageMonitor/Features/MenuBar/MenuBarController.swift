@@ -117,7 +117,8 @@ final class MenuBarController: NSObject {
             panel.setFrame(NSRect(origin: .zero, size: size), display: true)
             return
         }
-        let buttonFrame = buttonWindow.convertToScreen(button.frame)
+        let buttonFrameInWindow = button.convert(button.bounds, to: nil)
+        let buttonFrame = buttonWindow.convertToScreen(buttonFrameInWindow)
         let screenFrame = buttonWindow.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
         var x = buttonFrame.midX - size.width / 2
         x = min(max(x, screenFrame.minX + 8), screenFrame.maxX - size.width - 8)

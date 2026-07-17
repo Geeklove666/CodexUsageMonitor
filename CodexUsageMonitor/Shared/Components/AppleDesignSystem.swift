@@ -28,10 +28,11 @@ struct AppleCard<Content: View>: View {
     var cornerRadius: CGFloat = AppleUI.cardRadius
     var shadowRadius: CGFloat = 0
     var shadowY: CGFloat = 0
-    var material: Material = .thinMaterial
+    var material: Material? = .thinMaterial
     @ViewBuilder let content: Content
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -39,16 +40,24 @@ struct AppleCard<Content: View>: View {
             .padding(padding)
             .background {
                 if reduceTransparency {
-                    shape.fill(Color(nsColor: .controlBackgroundColor))
-                } else {
+                    shape.fill(stableFill)
+                } else if let material {
                     shape.fill(material)
-                    shape.fill(Color(nsColor: .controlBackgroundColor).opacity(0.50))
+                    shape.fill(Color(nsColor: .controlBackgroundColor).opacity(0.66))
+                } else {
+                    shape.fill(stableFill)
                 }
             }
             .overlay {
                 shape.strokeBorder(Color(nsColor: .separatorColor).opacity(contrast == .increased ? 0.55 : 0.28),
                                    lineWidth: contrast == .increased ? 1 : 0.75)
             }
+    }
+
+    private var stableFill: Color {
+        colorScheme == .dark
+            ? Color(red: 0.165, green: 0.165, blue: 0.175)
+            : Color(red: 0.985, green: 0.982, blue: 0.978)
     }
 }
 
@@ -81,19 +90,6 @@ struct SymbolTile: View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .strokeBorder(.white.opacity(0.12), lineWidth: 0.6)
             }
-    }
-}
-
-struct PrimaryActionButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        let feedback = StableButtonPressFeedback(isPressed: configuration.isPressed)
-        configuration.label
-            .font(.body.weight(.semibold))
-            .foregroundStyle(.white)
-            .frame(minHeight: AppleUI.controlHeight)
-            .padding(.horizontal, 20)
-            .liquidGlassSurface(cornerRadius: 14, tint: AppleUI.accent, interactive: true)
-            .opacity(feedback.contentOpacity)
     }
 }
 

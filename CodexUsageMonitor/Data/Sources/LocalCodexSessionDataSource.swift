@@ -21,10 +21,11 @@ enum LocalCodexLoginStatus: Equatable, Sendable {
     }
 }
 
-enum LocalCodexSessionError: LocalizedError, Sendable {
+enum LocalCodexSessionError: LocalizedError, Equatable, Sendable {
     case executableMissing
     case notAuthorized
     case notChatGPTLogin
+    case openAIAuthRequired
     case invalidResponse
     case serverFailure
     case protocolFailure(String)
@@ -34,6 +35,7 @@ enum LocalCodexSessionError: LocalizedError, Sendable {
         case .executableMissing: "未找到本机 Codex 命令"
         case .notAuthorized: "尚未授权使用本机 Codex 登录"
         case .notChatGPTLogin: "本机 Codex 当前不是 ChatGPT 登录"
+        case .openAIAuthRequired: "本机 Codex 尚未登录 ChatGPT，请点击 Codex 登录完成授权后再刷新"
         case .invalidResponse: "本机 Codex 返回了无法识别的额度数据"
         case .serverFailure: "本机 Codex 数据服务暂时不可用"
         case .protocolFailure(let message): "本机 Codex 协议错误：\(message)"
@@ -187,12 +189,8 @@ struct LocalCodexSessionDataSource: CodexUsageDataSource, CodexAnalyticsDataSour
         if let cached = await quotaCache.freshValue() { return cached }
         guard let executable = locator.locate() else { throw LocalCodexSessionError.executableMissing }
         let client = CodexAppServerClient(executable: executable)
-        let responses: CodexAppServerResponses
-        do {
-            responses = try await client.readAccountAndRateLimits()
-        } catch where LocalCodexQuotaRetryPolicy.shouldRetry(error) {
-            try await Task.sleep(for: .milliseconds(Int.random(in: 700...1_300)))
-            responses = try await client.readAccountAndRateLimits()
+        let responses = try await LocalCodexQuotaRetryPolicy.run {
+            try await client.readAccountAndRateLimits()
         }
         let quota: CodexUsageSnapshot
         do {
@@ -234,13 +232,28 @@ struct LocalCodexSessionDataSource: CodexUsageDataSource, CodexAnalyticsDataSour
 }
 
 enum LocalCodexQuotaRetryPolicy {
+    static func run<T: Sendable>(_ operation: () async throws -> T) async throws -> T {
+        var lastError: Error?
+        for attempt in 0..<3 {
+            do {
+                return try await operation()
+            } catch {
+                lastError = error
+                guard attempt < 2, shouldRetry(error) else { throw error }
+                try await Task.sleep(for: .milliseconds(Int.random(in: 800...1_600) * (attempt + 1)))
+            }
+        }
+        throw lastError ?? LocalCodexSessionError.serverFailure
+    }
+
     static func shouldRetry(_ error: Error) -> Bool {
         if error is CancellationError { return false }
         if case LocalCodexSessionError.serverFailure = error { return true }
         guard case LocalCodexSessionError.protocolFailure(let message) = error else { return false }
         let normalized = message.lowercased()
         return ["overloaded", "temporarily", "unavailable", "timeout", "timed out",
-                "connection reset", "connection refused", "broken pipe", "服务暂时"]
+                "connection reset", "connection refused", "broken pipe", "服务暂时",
+                "failed to fetch codex rate", "rate limit reset"]
             .contains { normalized.contains($0) }
     }
 }
@@ -307,16 +320,39 @@ struct CodexAppServerClient: Sendable {
             guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let id = (object["id"] as? NSNumber)?.intValue else { continue }
             if let error = object["error"] as? [String: Any] {
-                throw LocalCodexSessionError.protocolFailure(
-                    SensitiveDataRedactor().redact(error["message"] as? String ?? "未知服务错误")
-                )
+                throw Self.mappedProtocolError(error["message"] as? String ?? "未知服务错误")
             }
-            if id == 2 { account = data }
+            if id == 2 {
+                try Self.validateAccountResponse(data)
+                account = data
+            }
             if id == 3 { rateLimits = data }
         }
 
         guard let account, let rateLimits else { throw LocalCodexSessionError.invalidResponse }
         return CodexAppServerResponses(account: account, rateLimits: rateLimits)
+    }
+
+    private static func validateAccountResponse(_ data: Data) throws {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = object["result"] as? [String: Any] else {
+            throw LocalCodexSessionError.invalidResponse
+        }
+        if result["account"] == nil || result["account"] is NSNull {
+            throw LocalCodexSessionError.openAIAuthRequired
+        }
+    }
+
+    fileprivate static func mappedProtocolError(_ message: String) -> LocalCodexSessionError {
+        let redacted = SensitiveDataRedactor().redact(message)
+        let normalized = redacted.lowercased()
+        if normalized.contains("authentication required") ||
+            normalized.contains("requires openai auth") ||
+            normalized.contains("not logged in") ||
+            normalized.contains("login required") {
+            return .openAIAuthRequired
+        }
+        return .protocolFailure(redacted)
     }
 
     private func runAccountAndRateLimits() async throws -> Data {
@@ -363,7 +399,7 @@ private final class CodexAppServerProcess: @unchecked Sendable {
 
     init(executable: URL) {
         process.executableURL = executable
-        process.arguments = ["app-server", "--stdio"]
+        process.arguments = ["-s", "read-only", "-a", "untrusted", "app-server"]
         process.standardInput = input
         process.standardOutput = output
         process.standardError = errorOutput
@@ -449,8 +485,7 @@ private final class CodexAppServerProcess: @unchecked Sendable {
                   let id = (object["id"] as? NSNumber)?.intValue,
                   id == expectedID else { continue }
             if let error = object["error"] as? [String: Any] {
-                let message = SensitiveDataRedactor().redact(error["message"] as? String ?? "未知服务错误")
-                throw LocalCodexSessionError.protocolFailure(message)
+                throw CodexAppServerClient.mappedProtocolError(error["message"] as? String ?? "未知服务错误")
             }
             return line
         }
@@ -510,7 +545,7 @@ struct CodexAppServerRateLimitParser: Sendable {
     func parse(account accountData: Data, rateLimits rateLimitsData: Data, now: Date = .now) throws -> CodexUsageSnapshot {
         let decoder = JSONDecoder()
         let accountResponse = try decoder.decode(AccountResponse.self, from: accountData)
-        guard let account = accountResponse.result?.account else { throw LocalCodexSessionError.notChatGPTLogin }
+        guard let account = accountResponse.result?.account else { throw LocalCodexSessionError.openAIAuthRequired }
         guard account.type == "chatgpt" || account.type == "personalAccessToken" else {
             throw LocalCodexSessionError.notChatGPTLogin
         }
@@ -659,6 +694,7 @@ private struct AccountResponse: Decodable {
 
 private struct AccountResult: Decodable {
     let account: LocalCodexAccount?
+    let requiresOpenaiAuth: Bool?
 }
 
 private struct LocalCodexAccount: Decodable {
