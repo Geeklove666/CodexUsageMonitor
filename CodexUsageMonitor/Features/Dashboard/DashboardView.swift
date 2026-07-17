@@ -181,6 +181,8 @@ struct DashboardView: View {
                 }
             }
 
+            DataSourceDiagnosticsCard(diagnostic: monitor.diagnostic)
+
             AppleCard {
                 VStack(alignment: .leading, spacing: 12) {
                     SectionHeading(title: "美区价格基准", subtitle: "用于套餐标记的 Demo 参考。")
@@ -246,6 +248,67 @@ struct DashboardView: View {
         } set: { newValue in
             autoRefreshSeconds = AutoRefreshFrequency.sanitizedSeconds(newValue)
             monitor.restartRefreshLoop()
+        }
+    }
+}
+
+private struct DataSourceDiagnosticsCard: View {
+    let diagnostic: DataSourceDiagnostic
+
+    var body: some View {
+        AppleCard {
+            VStack(alignment: .leading, spacing: 14) {
+                SectionHeading(title: "真实刷新诊断", subtitle: "最近一次真实刷新链路，已脱敏。")
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 9) {
+                    GridRow {
+                        Text("来源").foregroundStyle(.secondary)
+                        Text("状态").foregroundStyle(.secondary)
+                        Text("耗时").foregroundStyle(.secondary)
+                        Text("结果").foregroundStyle(.secondary)
+                    }
+                    .font(.caption)
+                    Divider().gridCellColumns(4)
+                    if diagnostic.attempts.isEmpty {
+                        GridRow {
+                            Text("尚无刷新记录")
+                                .foregroundStyle(.secondary)
+                                .gridCellColumns(4)
+                        }
+                    } else {
+                        ForEach(diagnostic.attempts) { attempt in
+                            GridRow {
+                                Text(attempt.sourceLabel)
+                                Text(attempt.availability)
+                                    .foregroundStyle(.secondary)
+                                Text(attempt.duration.map { String(format: "%.2fs", $0) } ?? "--")
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                                Label(attempt.succeeded ? "成功" : (attempt.error ?? "跳过"),
+                                      systemImage: attempt.succeeded ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                                    .foregroundStyle(attempt.succeeded ? AppleUI.success : AppleUI.warning)
+                            }
+                            .font(.subheadline)
+                        }
+                    }
+                }
+
+                Divider().opacity(0.28)
+
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 18) { diagnosticSummaryRows }
+                    VStack(alignment: .leading, spacing: 8) { diagnosticSummaryRows }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var diagnosticSummaryRows: some View {
+        Label("触发：\(diagnostic.lastRefreshReason ?? "尚无")", systemImage: "bolt")
+        Label("当前：\(diagnostic.activeIdentifier)", systemImage: "externaldrive")
+        Label("完整度：\(Int(diagnostic.fieldCompleteness * 100))%", systemImage: "checklist")
+        if let duration = diagnostic.requestDuration {
+            Label(String(format: "耗时 %.2fs", duration), systemImage: "timer")
         }
     }
 }

@@ -35,6 +35,10 @@ final class ModelAndFormattingTests: XCTestCase {
         XCTAssertEqual(SubscriptionTierFormatter.displayName("enterprise"), "Enterprise 订阅")
         XCTAssertEqual(SubscriptionTierFormatter.displayName(nil), "用量监控")
     }
+    func testCreditsDisplayKeepsTwoFractionDigits() {
+        XCTAssertEqual(CreditsDisplay.value(CreditsUsage(remaining: Decimal(string: "2474.4415625"), used: nil, currencyOrUnit: "Credits", expiresAt: nil)), "2474.44")
+        XCTAssertEqual(CreditsDisplay.value(CreditsUsage(remaining: Decimal(2500), used: nil, currencyOrUnit: "Credits", expiresAt: nil)), "2500.00")
+    }
 }
 
 final class MonitoringStatusTests: XCTestCase {
@@ -96,7 +100,8 @@ final class MenuBarQuotaLevelTests: XCTestCase {
 
 final class AutoRefreshFrequencyTests: XCTestCase {
     func testOnlySupportedRefreshIntervalsAreAccepted() {
-        XCTAssertEqual(AutoRefreshFrequency.allCases.map(\.rawValue), [60, 300, 600])
+        XCTAssertEqual(AutoRefreshFrequency.allCases.map(\.rawValue), [0, 60, 300, 600])
+        XCTAssertEqual(AutoRefreshFrequency.sanitizedSeconds(0), 0)
         XCTAssertEqual(AutoRefreshFrequency.sanitizedSeconds(60), 60)
         XCTAssertEqual(AutoRefreshFrequency.sanitizedSeconds(300), 300)
         XCTAssertEqual(AutoRefreshFrequency.sanitizedSeconds(600), 600)
@@ -675,6 +680,7 @@ final class NativeUISnapshotSmokeTests: XCTestCase {
         }
         XCTAssertTrue(source.contains("自动刷新频率"))
         XCTAssertTrue(source.contains("AutoRefreshFrequency.allCases"))
+        XCTAssertTrue(source.contains("真实刷新诊断"))
         XCTAssertTrue(source.contains("Demo"))
         XCTAssertFalse(source.contains(".glassEffect("), "Dashboard content must not apply glassEffect directly.")
     }

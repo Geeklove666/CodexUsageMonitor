@@ -18,6 +18,7 @@ final class UsageMonitoringService {
     private var refreshTask: Task<Void, Never>?
     private var analyticsTask: Task<Void, Never>?
     private var failures = 0
+    private var lastMenuOpenAt: Date?
 
     var snapshot = CodexUsageSnapshot.unavailable
     var isRefreshing = false
@@ -58,7 +59,7 @@ final class UsageMonitoringService {
                 let defaults = UserDefaults.standard
                 let configured = defaults.object(forKey: Self.refreshIntervalPreferenceKey) as? Int
                     ?? AutoRefreshFrequency.defaultValue.rawValue
-                let base = Double(AutoRefreshFrequency.sanitizedSeconds(configured))
+                let base = refreshDelay(configuredSeconds: configured)
                 let backoff = [0.0, 60, 120, 300, 600, 1800][min(self.failures, 5)]
                 let delay = max(base, backoff) * Double.random(in: 0.95...1.05)
                 try? await Task.sleep(for: .seconds(delay))
@@ -67,7 +68,18 @@ final class UsageMonitoringService {
         }
     }
 
-    func refresh() async {
+    func noteMenuOpened() {
+        lastMenuOpenAt = .now
+    }
+
+    func refreshIfStaleForMenuOpen(maxAge: TimeInterval = 120) async {
+        noteMenuOpened()
+        if shouldRefreshForMenuOpen(maxAge: maxAge) {
+            await refresh(reason: "菜单打开")
+        }
+    }
+
+    func refresh(reason: String = "手动刷新") async {
         if let refreshTask {
             await refreshTask.value
             return
@@ -83,6 +95,7 @@ final class UsageMonitoringService {
                 if let realtime = await realtimeValue { quota = quota.mergingAnalytics(realtime) }
                 self.snapshot = quota
                 self.diagnostic = await self.repository.currentDiagnostic()
+                self.diagnostic.lastRefreshReason = reason
                 if quota.isCached || quota.isEstimated {
                     self.lastError = self.diagnostic.lastFailure ?? "未能获取新额度，正在保留上次数据"
                     self.failures += 1
@@ -105,6 +118,7 @@ final class UsageMonitoringService {
                     ? quotaError : "\(quotaError)；今日 Token 保留上次结果"
                 self.logger.error("Usage refresh failed: \(redacted, privacy: .public)")
                 self.diagnostic = await self.repository.currentDiagnostic()
+                self.diagnostic.lastRefreshReason = reason
             }
         }
         await refreshTask?.value
@@ -147,5 +161,28 @@ final class UsageMonitoringService {
     func cancel() {
         loopTask?.cancel(); refreshTask?.cancel(); analyticsTask?.cancel()
         loopTask = nil; refreshTask = nil; analyticsTask = nil
+    }
+
+    private func shouldRefreshForMenuOpen(maxAge: TimeInterval) -> Bool {
+        if isRefreshing { return false }
+        if snapshot.sourceKind == .unavailable { return true }
+        if lastError != nil { return true }
+        if snapshot.isCached || snapshot.isEstimated { return true }
+        return Date.now.timeIntervalSince(snapshot.fetchedAt) > maxAge
+    }
+
+    private func refreshDelay(configuredSeconds: Int) -> Double {
+        guard AutoRefreshFrequency(rawValue: configuredSeconds) == .adaptive else {
+            return Double(AutoRefreshFrequency.sanitizedSeconds(configuredSeconds))
+        }
+        let process = ProcessInfo.processInfo
+        if process.isLowPowerModeEnabled || process.thermalState == .serious || process.thermalState == .critical {
+            return Double(AutoRefreshFrequency.tenMinutes.rawValue)
+        }
+        guard let lastMenuOpenAt else { return Double(AutoRefreshFrequency.tenMinutes.rawValue) }
+        let age = Date.now.timeIntervalSince(lastMenuOpenAt)
+        if age <= 5 * 60 { return Double(AutoRefreshFrequency.oneMinute.rawValue) }
+        if age <= 60 * 60 { return Double(AutoRefreshFrequency.fiveMinutes.rawValue) }
+        return Double(AutoRefreshFrequency.tenMinutes.rawValue)
     }
 }

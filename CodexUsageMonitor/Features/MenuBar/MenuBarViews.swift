@@ -72,6 +72,9 @@ struct MenuBarLabel: View {
 
 struct MenuPanelView: View {
     @Bindable var monitor: UsageMonitoringService
+    var openDashboardAction: (() -> Void)?
+    var openLoginAction: (() -> Void)?
+    var openSettingsAction: (() -> Void)?
     @Environment(\.openWindow) private var openWindow
     @Environment(WebViewSession.self) private var webSession
     @Environment(\.openSettings) private var openSettings
@@ -100,10 +103,13 @@ struct MenuPanelView: View {
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .background { MenuPanelHostWindowConfigurator().frame(width: 0, height: 0) }
         .containerBackground(.clear, for: .window)
-        .task { monitor.start() }
+        .task {
+            monitor.start()
+            await monitor.refreshIfStaleForMenuOpen()
+        }
         .alert("浏览器与应用登录相互独立", isPresented: $showsBrowserChoice) {
             Button("应用内登录") {
-                openWindow(id: "login"); webSession.openUsagePage(); NSApp.activate()
+                showLogin()
             }
             Button("仅在浏览器查看") {
                 NSWorkspace.shared.open(OfficialPageConfiguration.analyticsURL)
@@ -179,7 +185,7 @@ struct MenuPanelView: View {
                 .help("同步刷新额度数据和今日 Token")
 
                 Button {
-                    openWindow(id: "dashboard"); NSApp.activate()
+                    showDashboard()
                 } label: {
                     Label("完整面板", systemImage: "macwindow")
                         .symbolRenderingMode(.hierarchical)
@@ -205,7 +211,7 @@ struct MenuPanelView: View {
                         showsBrowserChoice = true
                     }
                     utilityButton("设置", symbol: "gearshape") {
-                        openSettings(); NSApp.activate()
+                        showSettings()
                     }
                     utilityButton("退出 Codex Usage", symbol: "power", destructive: true) {
                         NSApp.terminate(nil)
@@ -263,6 +269,34 @@ struct MenuPanelView: View {
 
     private func requestRefresh() {
         Task { await monitor.refresh() }
+    }
+
+    private func showDashboard() {
+        if let openDashboardAction {
+            openDashboardAction()
+        } else {
+            openWindow(id: "dashboard")
+            NSApp.activate()
+        }
+    }
+
+    private func showLogin() {
+        if let openLoginAction {
+            openLoginAction()
+        } else {
+            openWindow(id: "login")
+            webSession.openUsagePage()
+            NSApp.activate()
+        }
+    }
+
+    private func showSettings() {
+        if let openSettingsAction {
+            openSettingsAction()
+        } else {
+            openSettings()
+            NSApp.activate()
+        }
     }
 }
 

@@ -8,14 +8,6 @@ struct CodexUsageMonitorApp: App {
     @State private var container = DependencyContainer()
 
     var body: some Scene {
-        MenuBarExtra {
-            MenuPanelView(monitor: container.monitoring)
-                .environment(container.webSession)
-        } label: {
-            MenuBarLabel(snapshot: container.monitoring.snapshot, now: container.monitoring.now)
-        }
-        .menuBarExtraStyle(.window)
-
         Window("Codex Usage", id: "dashboard") {
             DashboardView(monitor: container.monitoring, history: container.history)
                 .environment(container.webSession)

@@ -6,6 +6,7 @@ final class DependencyContainer {
     let history: UsageHistoryStore
     let repository: DefaultCodexUsageRepository
     let monitoring: UsageMonitoringService
+    let menuBarController: MenuBarController
 
     init() {
         var persistenceWarnings: [String] = []
@@ -44,6 +45,7 @@ final class DependencyContainer {
             repository: repository, history: history,
             realtimeTokenReader: realtimeTokenReader, initialSnapshot: initialSnapshot
         )
+        menuBarController = MenuBarController(monitor: monitoring, history: history, webSession: webSession)
         monitoring.persistenceWarning = persistenceWarnings.isEmpty ? nil : persistenceWarnings.joined(separator: "\n")
         webSession.onPageReady = { [weak monitoring] in
             Task { @MainActor in

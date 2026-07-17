@@ -405,7 +405,7 @@ enum CreditsDisplay {
         case "无限": return "无限"
         case "Unlimited": return "无限"
         case "Unavailable": return "未启用"
-        default: return credits?.remaining.map { String(describing: $0) } ?? "--"
+        default: return credits?.remaining.map { decimalFormatter.string(from: $0 as NSDecimalNumber) ?? String(describing: $0) } ?? "--"
         }
     }
 
@@ -415,4 +415,13 @@ enum CreditsDisplay {
         if credits.currencyOrUnit == "Unavailable" { return "账户未启用" }
         return credits.currencyOrUnit ?? "Credits"
     }
+
+    private static let decimalFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 2
+        formatter.maximumFractionDigits = 2
+        formatter.usesGroupingSeparator = false
+        return formatter
+    }()
 }

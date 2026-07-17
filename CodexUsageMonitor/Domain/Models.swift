@@ -175,4 +175,18 @@ struct DataSourceDiagnostic: Sendable {
     var requestDuration: TimeInterval?
     var parserVersion: String?
     var fieldCompleteness: Double = 0
+    var attempts: [DataSourceAttemptDiagnostic] = []
+    var lastRefreshReason: String?
+}
+
+struct DataSourceAttemptDiagnostic: Identifiable, Sendable, Equatable {
+    let id = UUID()
+    let sourceIdentifier: String
+    let sourceLabel: String
+    let kind: UsageSourceKind?
+    let availability: String
+    let succeeded: Bool
+    let duration: TimeInterval?
+    let error: String?
+    let timestamp: Date
 }

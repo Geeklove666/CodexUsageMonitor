@@ -44,28 +44,70 @@ actor DefaultCodexUsageRepository {
         if let localCodex { sources.append(localCodex) }
         sources.append(contentsOf: [web, cache, estimate])
         var lastError: Error = UsageMonitorError.noAvailableDataSource
+        var attempts: [DataSourceAttemptDiagnostic] = []
         for source in sources {
             try Task.checkCancellation()
-            guard case .available = await source.availability() else { continue }
+            let availability = await source.availability()
+            guard case .available = availability else {
+                attempts.append(DataSourceAttemptDiagnostic(
+                    sourceIdentifier: source.identifier,
+                    sourceLabel: source.displayName,
+                    kind: source.sourceKind,
+                    availability: availability.diagnosticLabel,
+                    succeeded: false,
+                    duration: nil,
+                    error: nil,
+                    timestamp: .now
+                ))
+                continue
+            }
             let start = ContinuousClock.now
             do {
                 let value = try await withTimeout(requestTimeout) { try await source.fetchUsage() }
+                let duration = start.duration(to: .now).seconds
+                attempts.append(DataSourceAttemptDiagnostic(
+                    sourceIdentifier: source.identifier,
+                    sourceLabel: source.displayName,
+                    kind: source.sourceKind,
+                    availability: availability.diagnosticLabel,
+                    succeeded: true,
+                    duration: duration,
+                    error: nil,
+                    timestamp: .now
+                ))
                 diagnostic.activeIdentifier = source.identifier
                 if !value.isCached && !value.isEstimated {
                     diagnostic.lastSuccess = .now
                     diagnostic.lastFailure = nil
                 }
-                diagnostic.requestDuration = start.duration(to: .now).seconds
+                diagnostic.requestDuration = duration
                 diagnostic.fieldCompleteness = value.fieldCompleteness
                 diagnostic.parserVersion = source.parserVersion
+                diagnostic.attempts = attempts
                 if !value.isCached && !value.isEstimated {
                     await cache.update(value)
                     await estimate.record(value)
                 }
                 return value
             } catch is CancellationError { throw UsageMonitorError.cancelled }
-            catch { lastError = error; diagnostic.lastFailure = SensitiveDataRedactor().redact(error.localizedDescription) }
+            catch {
+                lastError = error
+                let redacted = SensitiveDataRedactor().redact(error.localizedDescription)
+                diagnostic.lastFailure = redacted
+                attempts.append(DataSourceAttemptDiagnostic(
+                    sourceIdentifier: source.identifier,
+                    sourceLabel: source.displayName,
+                    kind: source.sourceKind,
+                    availability: availability.diagnosticLabel,
+                    succeeded: false,
+                    duration: start.duration(to: .now).seconds,
+                    error: redacted,
+                    timestamp: .now
+                ))
+                diagnostic.attempts = attempts
+            }
         }
+        diagnostic.attempts = attempts
         throw lastError
     }
 
@@ -143,6 +185,16 @@ actor DefaultCodexUsageRepository {
             guard let first = try await group.next() else { throw UsageMonitorError.noAvailableDataSource }
             group.cancelAll()
             return first
+        }
+    }
+}
+
+private extension DataSourceAvailability {
+    var diagnosticLabel: String {
+        switch self {
+        case .available: "可用"
+        case .authenticationRequired: "需要登录"
+        case .unavailable(let reason): SensitiveDataRedactor().redact(reason)
         }
     }
 }
