@@ -45,8 +45,8 @@ final class MenuBarController: NSObject {
         button.attributedTitle = NSAttributedString(
             string: "Codex \(menuDetail)",
             attributes: [
-                .font: NSFont.menuBarFont(ofSize: 0).withWeight(.semibold),
-                .foregroundColor: NSColor(labelColor: menuColor)
+                .font: NSFont.menuBarFont(ofSize: 0),
+                .foregroundColor: NSColor.labelColor
             ]
         )
         button.toolTip = "Codex Usage Monitor"
@@ -60,11 +60,6 @@ final class MenuBarController: NSObject {
         guard let reset = snapshot.primaryWindow?.resetsAt else { return "\(prefix)\(Int(remaining))%" }
         guard reset > monitor.now else { return "\(prefix)\(Int(remaining))% · 已过期" }
         return "\(prefix)\(Int(remaining))% · \(DurationFormatter.short(reset.timeIntervalSince(monitor.now)))"
-    }
-
-    private var menuColor: Color {
-        monitor.snapshot.primaryWindow?.remainingPercentage
-            .map { MenuBarQuotaLevel(remainingPercentage: $0).color } ?? .primary
     }
 
     @objc private func togglePanel() {
@@ -209,20 +204,4 @@ final class MenuBarController: NSObject {
 private final class TransparentMenuPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
-}
-
-private extension NSFont {
-    func withWeight(_ weight: NSFont.Weight) -> NSFont {
-        NSFontManager.shared.convert(self, toHaveTrait: []).withSize(pointSize).withWeightFallback(weight)
-    }
-
-    private func withWeightFallback(_ weight: NSFont.Weight) -> NSFont {
-        NSFont.systemFont(ofSize: pointSize, weight: weight)
-    }
-}
-
-private extension NSColor {
-    convenience init(labelColor color: Color) {
-        self.init(color)
-    }
 }

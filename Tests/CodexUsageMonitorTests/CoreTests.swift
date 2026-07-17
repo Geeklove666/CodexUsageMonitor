@@ -717,6 +717,20 @@ final class NativeUISnapshotSmokeTests: XCTestCase {
         XCTAssertFalse(source.contains("try? await LocalCodexLoginProbe().startLogin()"))
     }
 
+    func testMenuBarTitleUsesSystemLabelColor() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = repositoryRoot
+            .appendingPathComponent("CodexUsageMonitor/Features/MenuBar/MenuBarController.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains(".foregroundColor: NSColor.labelColor"))
+        XCTAssertFalse(source.contains("MenuBarQuotaLevel(remainingPercentage: $0).color"))
+        XCTAssertFalse(source.contains("NSColor(labelColor:"))
+    }
+
     func testCompactUsageSummaryRendersAtMenuWidth() throws {
         let snapshot = CodexUsageSnapshot(
             primaryWindow: UsageLimitWindow(kind: .primary, remainingPercentage: 64, usedPercentage: 36, resetsAt: .now.addingTimeInterval(3600), durationDescription: "5 小时"),
