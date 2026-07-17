@@ -2,8 +2,8 @@ Codex Usage Monitor 安装说明
 ============================
 
 系统要求
-• macOS 14 或更高版本
-• 支持 Apple Silicon 与 Intel Mac
+• macOS 15 或更高版本（已面向 macOS 27 测试版构建验证）
+• 仅支持 Apple Silicon（M 系列）Mac
 
 安装
 1. 将“Codex Usage Monitor”拖到旁边的 Applications 文件夹。
@@ -12,8 +12,8 @@ Codex Usage Monitor 安装说明
 
 首次使用
 • 点击菜单栏中的 Codex 状态项。
-• 优先选择“复用本机 Codex”，阅读说明后决定是否授权。
-• 本机来源不可用时，选择“浏览器查看 → 应用内登录”。
+• 选择“OpenAI 登录”，在应用内官方页面完成登录。
+• 返回菜单栏点击“刷新”；本机今日 Token 可另行授权。
 • 登录会话及用量历史只保存在当前 Mac。
 
 说明

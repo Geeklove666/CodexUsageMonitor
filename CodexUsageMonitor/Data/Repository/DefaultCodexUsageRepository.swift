@@ -14,7 +14,6 @@ actor DefaultCodexUsageRepository {
     private let cache: CachedSnapshotDataSource
     private let estimate: LocalEstimateDataSource
     private let requestTimeout: Duration
-    private let localQuotaTimeout: Duration
     private let analyticsTimeout: Duration
     private(set) var diagnostic = DataSourceDiagnostic()
 
@@ -23,13 +22,12 @@ actor DefaultCodexUsageRepository {
          analytics: (any CodexAnalyticsDataSource)? = nil,
          analyticsSources: [any CodexAnalyticsDataSource] = [],
          cache: CachedSnapshotDataSource, estimate: LocalEstimateDataSource,
-         requestTimeout: Duration = .seconds(15), localQuotaTimeout: Duration = .seconds(45),
+         requestTimeout: Duration = .seconds(20),
          analyticsTimeout: Duration = .seconds(8)) {
         self.official = official; self.localCodex = localCodex; self.web = web
         self.analyticsSources = analyticsSources.isEmpty ? analytics.map { [$0] } ?? [] : analyticsSources
         self.cache = cache; self.estimate = estimate
         self.requestTimeout = requestTimeout; self.analyticsTimeout = analyticsTimeout
-        self.localQuotaTimeout = localQuotaTimeout
     }
 
     func fetch() async throws -> CodexUsageSnapshot {
@@ -51,8 +49,7 @@ actor DefaultCodexUsageRepository {
             guard case .available = await source.availability() else { continue }
             let start = ContinuousClock.now
             do {
-                let timeout = source.sourceKind == .localCodexSession ? localQuotaTimeout : requestTimeout
-                let value = try await withTimeout(timeout) { try await source.fetchUsage() }
+                let value = try await withTimeout(requestTimeout) { try await source.fetchUsage() }
                 diagnostic.activeIdentifier = source.identifier
                 if !value.isCached && !value.isEstimated {
                     diagnostic.lastSuccess = .now

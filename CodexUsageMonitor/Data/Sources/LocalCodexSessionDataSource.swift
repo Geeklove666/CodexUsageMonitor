@@ -3,8 +3,22 @@ import Foundation
 import Security
 
 enum LocalCodexSessionAuthorization {
-    static let preferenceKey = "experimentalReuseLocalCodexLogin"
+    static let preferenceKey = "reuseLocalCodexLogin"
     static let allowCustomExecutableKey = "allowCustomCodexExecutable"
+}
+
+enum LocalCodexLoginStatus: Equatable, Sendable {
+    case loggedIn(String)
+    case loggedOut(String)
+    case unavailable(String)
+
+    var label: String {
+        switch self {
+        case .loggedIn(let detail): "已登录 · \(detail)"
+        case .loggedOut(let detail): "未登录 · \(detail)"
+        case .unavailable(let detail): "不可用 · \(detail)"
+        }
+    }
 }
 
 enum LocalCodexSessionError: LocalizedError, Sendable {
@@ -18,7 +32,7 @@ enum LocalCodexSessionError: LocalizedError, Sendable {
     var errorDescription: String? {
         switch self {
         case .executableMissing: "未找到本机 Codex 命令"
-        case .notAuthorized: "尚未授权复用本机 Codex 登录"
+        case .notAuthorized: "尚未授权使用本机 Codex 登录"
         case .notChatGPTLogin: "本机 Codex 当前不是 ChatGPT 登录"
         case .invalidResponse: "本机 Codex 返回了无法识别的额度数据"
         case .serverFailure: "本机 Codex 数据服务暂时不可用"
@@ -75,10 +89,65 @@ struct CodexExecutableLocator: Sendable {
     }
 }
 
+struct LocalCodexLoginProbe: Sendable {
+    let locator: CodexExecutableLocator
+
+    init(locator: CodexExecutableLocator = CodexExecutableLocator()) {
+        self.locator = locator
+    }
+
+    func status() async -> LocalCodexLoginStatus {
+        guard let executable = locator.locate() else {
+            return .unavailable("未找到 OpenAI 签名的本机 Codex 命令")
+        }
+        do {
+            let result = try await run(executable: executable, arguments: ["login", "status"], waitsForExit: true)
+            let output = SensitiveDataRedactor().redact(result.output.trimmingCharacters(in: .whitespacesAndNewlines))
+            guard result.exitCode == 0 else { return .loggedOut(output.isEmpty ? "需要运行 codex login" : output) }
+            return output.localizedCaseInsensitiveContains("logged in")
+                ? .loggedIn(output.replacingOccurrences(of: "Logged in using ", with: ""))
+                : .loggedOut(output.isEmpty ? "需要运行 codex login" : output)
+        } catch {
+            return .unavailable(SensitiveDataRedactor().redact(error.localizedDescription))
+        }
+    }
+
+    func startLogin() async throws {
+        guard let executable = locator.locate() else { throw LocalCodexSessionError.executableMissing }
+        _ = try await run(executable: executable, arguments: ["login"], waitsForExit: false)
+    }
+
+    private func run(executable: URL, arguments: [String], waitsForExit: Bool) async throws -> (output: String, exitCode: Int32) {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                let process = Process()
+                let output = Pipe()
+                process.executableURL = executable
+                process.arguments = arguments
+                process.standardOutput = output
+                process.standardError = output
+                process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
+                do {
+                    try process.run()
+                    if waitsForExit {
+                        process.waitUntilExit()
+                        let data = output.fileHandleForReading.readDataToEndOfFile()
+                        continuation.resume(returning: (String(data: data, encoding: .utf8) ?? "", process.terminationStatus))
+                    } else {
+                        continuation.resume(returning: ("", 0))
+                    }
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+}
+
 struct LocalCodexSessionDataSource: CodexUsageDataSource, CodexAnalyticsDataSource {
     let identifier = "local-codex-session"
     let analyticsIdentifier = "local-codex-account-usage"
-    let displayName = "本机 Codex 登录（实验性）"
+    let displayName = "本机 Codex 登录"
     let sourceKind = UsageSourceKind.localCodexSession
     let parserVersion: String? = "Codex app-server v2 rate-limits"
     let analyticsParserVersion: String? = "Codex app-server v2 account-usage"
@@ -105,6 +174,9 @@ struct LocalCodexSessionDataSource: CodexUsageDataSource, CodexAnalyticsDataSour
             return .unavailable("需要用户主动授权")
         }
         guard locator.locate() != nil else { return .unavailable("未找到本机 Codex 命令") }
+        guard case .loggedIn = await LocalCodexLoginProbe(locator: locator).status() else {
+            return .authenticationRequired
+        }
         return .available
     }
 
@@ -439,11 +511,11 @@ struct CodexAppServerRateLimitParser: Sendable {
             credits: credits,
             resetAllowance: resetAllowance,
             sourceKind: .localCodexSession,
-            sourceDisplayName: "本机 Codex app-server（实验性）",
+            sourceDisplayName: "本机 Codex 登录",
             confidence: .verified,
             fieldCompleteness: completeness,
             expiresAt: now.addingTimeInterval(300),
-            diagnosticMessage: details.isEmpty ? "经用户授权复用本机 Codex 登录；应用未读取或保存 Token" : details
+            diagnosticMessage: details.isEmpty ? "经用户授权使用本机 Codex 登录读取额度；应用未读取或保存 Token" : details
         )
     }
 

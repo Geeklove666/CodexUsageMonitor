@@ -10,16 +10,15 @@
 - Swift 6.4
 - 项目使用 Swift Package；命令显式设置 `DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer`
 
-## App 构建
+## 2.0.3 本地开发构建
 
 执行：
 
 ```bash
-DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift package clean
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift build
 ```
 
-最终结果：成功，0 个错误。当前版本为 1.8.8（Build 31），最低部署版本 macOS 14。Xcode 27 beta 在构建 Universal 2 时提示 `x86_64` 对 macOS 27 部署目标已弃用；最终二进制仍同时包含 `arm64` 与 `x86_64`，其 `LC_BUILD_VERSION` 最低版本为 14.0。
+最终结果：成功，0 个错误。当前版本为 2.0.3（Build 35），最低部署版本 macOS 15.0。产品包只面向 Apple Silicon，正式打包脚本使用 `--arch arm64`，并验证最终二进制只包含 `arm64`。
 
 ## XCTest
 
@@ -29,23 +28,33 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift build
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test
 ```
 
-最终结果：68 个 XCTest 全部通过，0 个失败、0 个未执行。覆盖 WebView 注入脚本、今日 Token、app-server Credits/个人消费限制、临时错误重试策略、字段来源合并、额度短缓存、授权恢复路由、缓存刷新状态、Analytics 缓存恢复，以及设计系统不再应用缩放变换的回归。原先未被主程序依赖的重复 `Core` Package 已移除。
+最终结果：59 个 XCTest 全部通过，0 个失败、0 个未执行。覆盖 WebView 注入脚本、今日 Token、官方页面额度来源、本机 Codex app-server 额度解析、字段来源合并、缓存刷新状态、Analytics 缓存恢复、DESIGN.md Dashboard 结构，以及设计系统不再应用缩放变换的回归。
+
+## 数据源调整
+
+2.0.1 重新加入用户授权的“本机 Codex 登录”额度读取链路。实现会先用 stable 的 `codex login status` 检查本机登录，再调用 OpenAI 签名的本机 `codex app-server --stdio` 读取额度；由于 app-server 官方成熟度仍为 Experimental，它只作为可选优先源，失败时继续回退到 App 内隔离的 OpenAI 官方 WebKit 会话、缓存与估算。本机 Token 统计仍为单独授权的本地读取能力。
+
+## UI 调整
+
+界面按 Apple's Liquid Glass Design 重新整理：macOS 26 及以上使用原生 Liquid Glass 效果，macOS 15 使用系统 Material 降级方案。按钮按压态只改变透明度和填充，不再使用放大缩放，避免点击整块面板被放大的问题。2.0.2 进一步移除“更新今日 Token”独立按钮，改由“刷新”同步刷新额度和今日 Token；完整面板改为中文导航与中文 Demo 文案。2.0.3 移除“完整面板”按钮的大面积蓝色 tint，改为中性 Liquid Glass 控件。
 
 ## 启动冒烟测试
 
-执行 Debug 可执行文件后等待 5 秒。进程保持运行，无 stdout/stderr 错误，证明 SwiftUI 菜单栏应用完成启动且未立即崩溃。
+本地安装到 `/Applications/Codex Usage Monitor.app` 后启动成功，进程保持运行，没有立即崩溃。该测试验证的是本机可启动，不等同于跨 Mac 可分发签名验证。
 
-## 1.8.8 本机测试 DMG
+## 2.0.3 本机测试 DMG
 
-- 文件：`Codex-Usage-Monitor-1.8.8-local-test-universal.dmg`；
-- 架构：`arm64`、`x86_64`；
-- 最低 macOS：14.0；
+- 文件：`Codex-Usage-Monitor-2.0.3-local-test-apple-silicon.dmg`；
+- 架构：`arm64`；
+- 最低 macOS：15.0；
 - 签名：ad-hoc，仅供本机开发测试，不能作为跨 Mac 分享版；
 - Apple 公证票据：无；
-- SHA-256：`387066f42f4e1ba0a2f40cda177bb1b6e605bc610fa5ad3f0991338ec3e03071`。
+- SHA-256：`2eff6acab4d33265b5ad67da61e925dd900c998260db2641d66f930c05e1bfcb`。
 
-## 本轮刻意保留
+## 发布阻塞项
 
-- 当前钥匙串没有 Developer ID 身份，因此不能生成可信分享版；脚本现在会拒绝静默生成未签名/未公证的发布包。`ALLOW_ADHOC=1` 只用于本机开发验证，并强制在文件名中加入 `local-test`；
-- GitHub Actions CI 已配置为在 push 和 pull request 时验证元数据、构建并运行测试；
-- 真实账户页面仍可能随 OpenAI 更新，需要持续使用脱敏 Fixture 回归验证。
+当前钥匙串没有有效的 Developer ID Application 证书，因此不能生成可稳定分享给其它 Mac 的 Gatekeeper 可信安装包。正式分享版还需要 Developer ID 签名和 Apple notarization；脚本会拒绝在缺少这些凭据时静默生成“看似正式”的未公证包。`ALLOW_ADHOC=1` 只用于本机开发验证，并强制在文件名中加入 `local-test`。
+
+## GitHub 状态
+
+本轮没有提交、推送、创建 Release 或更新 GitHub。用户确认前，本地改动保留在工作区。

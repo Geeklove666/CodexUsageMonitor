@@ -9,7 +9,7 @@ struct LoginView: View {
             Divider().opacity(0.3)
             WebViewRepresentable(webView: session.webView)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background { AppBackground() }
         .onAppear { session.openUsagePage() }
     }
 
@@ -30,7 +30,8 @@ struct LoginView: View {
         }
         .padding(.horizontal, 18)
         .frame(minHeight: 72)
-        .background(.regularMaterial)
+        .liquidGlassSurface(cornerRadius: 20)
+        .padding(10)
     }
 }
 

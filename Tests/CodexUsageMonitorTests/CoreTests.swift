@@ -24,22 +24,18 @@ final class ModelAndFormattingTests: XCTestCase {
         XCTAssertEqual(TokenMilestoneFormatter.todayMessage(tokens: 18_000_000), "今天已经花掉了 0.18 个小目标")
     }
     func testSubscriptionTierFormatting() {
-        XCTAssertEqual(SubscriptionTierFormatter.displayName("plus"), "20$ Plus 订阅")
-        XCTAssertEqual(SubscriptionTierFormatter.displayName("Free"), "0$ Free")
-        XCTAssertEqual(SubscriptionTierFormatter.displayName("pro"), "100$ Pro 订阅")
-        XCTAssertEqual(SubscriptionTierFormatter.displayName("pro_5x"), "100$ Pro 订阅")
-        XCTAssertEqual(SubscriptionTierFormatter.displayName("pro 10x"), "200$ Pro 订阅")
+        XCTAssertEqual(SubscriptionTierFormatter.displayName("plus"), "$20 Plus 订阅")
+        XCTAssertEqual(SubscriptionTierFormatter.displayName("Free"), "$0 Free")
+        XCTAssertEqual(SubscriptionTierFormatter.displayName("go"), "$8 Go 订阅")
+        XCTAssertEqual(SubscriptionTierFormatter.displayName("pro"), "$100 Pro 5x 订阅")
+        XCTAssertEqual(SubscriptionTierFormatter.displayName("pro_5x"), "$100 Pro 5x 订阅")
+        XCTAssertEqual(SubscriptionTierFormatter.displayName("pro 20x"), "$200 Pro 20x 订阅")
         XCTAssertEqual(SubscriptionTierFormatter.displayName("enterprise"), "Enterprise 订阅")
         XCTAssertEqual(SubscriptionTierFormatter.displayName(nil), "用量监控")
     }
 }
 
 final class MonitoringStatusTests: XCTestCase {
-    func testRefreshRequiresConsentWhenLocalAuthorizationWasCleared() {
-        XCTAssertTrue(RefreshAuthorizationPolicy.requiresLocalCodexConsent(isAuthorized: false))
-        XCTAssertFalse(RefreshAuthorizationPolicy.requiresLocalCodexConsent(isAuthorized: true))
-    }
-
     func testCachedSnapshotStillReportsRefreshingWhileRequestIsRunning() {
         let cached = CodexUsageSnapshot(
             primaryWindow: UsageLimitWindow(kind: .primary, remainingPercentage: 70, usedPercentage: 30, resetsAt: nil, durationDescription: nil),
@@ -177,71 +173,26 @@ final class OfficialUsageAPIParserTests: XCTestCase {
     }
 }
 
-final class CodexAppServerRateLimitParserTests: XCTestCase {
-    let parser = CodexAppServerRateLimitParser()
+final class LocalCodexSessionParserTests: XCTestCase {
+    func testAppServerRateLimitsParseIntoLocalCodexSnapshot() throws {
+        let reset = Int(Date.now.addingTimeInterval(3_600).timeIntervalSince1970)
+        let account = """
+        {"id":2,"result":{"account":{"type":"chatgpt","planType":"pro_20x"}}}
+        """.data(using: .utf8)!
+        let limits = """
+        {"id":3,"result":{"rateLimits":{"primary":{"usedPercent":25,"windowDurationMins":300,"resetsAt":\(reset)},"secondary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":\(reset)},"credits":{"balance":"2500","hasCredits":true,"unlimited":false},"planType":"pro_20x"},"rateLimitResetCredits":{"availableCount":3,"credits":[]}}}
+        """.data(using: .utf8)!
 
-    func testOfficialRateLimitResponseMapsUsedToRemaining() throws {
-        let account = Data(#"{"id":2,"result":{"account":{"type":"chatgpt","email":null,"planType":"plus"},"requiresOpenaiAuth":true}}"#.utf8)
-        let limits = Data(#"{"id":3,"result":{"rateLimits":{"primary":{"usedPercent":25,"windowDurationMins":300,"resetsAt":1730947200},"secondary":{"usedPercent":40,"windowDurationMins":10080,"resetsAt":1731552000},"rateLimitReachedType":null},"rateLimitResetCredits":{"availableCount":3,"credits":[{"resetType":"full","status":"available","grantedAt":1730000000,"expiresAt":1732000000,"title":"Full reset","description":"Reset the usage limit"}]}}}"#.utf8)
+        let snapshot = try CodexAppServerRateLimitParser().parse(account: account, rateLimits: limits)
 
-        let snapshot = try parser.parse(account: account, rateLimits: limits, now: Date(timeIntervalSince1970: 1_700_000_000))
         XCTAssertEqual(snapshot.sourceKind, .localCodexSession)
-        XCTAssertEqual(snapshot.planName, "plus")
+        XCTAssertEqual(snapshot.sourceDisplayName, "本机 Codex 登录")
+        XCTAssertEqual(snapshot.planName, "pro_20x")
         XCTAssertEqual(snapshot.primaryWindow?.remainingPercentage, 75)
-        XCTAssertEqual(snapshot.secondaryWindow?.remainingPercentage, 60)
-        XCTAssertEqual(snapshot.primaryWindow?.resetsAt, Date(timeIntervalSince1970: 1_730_947_200))
+        XCTAssertEqual(snapshot.secondaryWindow?.remainingPercentage, 90)
+        XCTAssertEqual(snapshot.credits?.remaining, Decimal(2500))
         XCTAssertEqual(snapshot.resetAllowance?.availableCount, 3)
-        XCTAssertEqual(snapshot.resetAllowance?.credits.first?.expiresAt, Date(timeIntervalSince1970: 1_732_000_000))
-        XCTAssertEqual(snapshot.confidence, .verified)
-    }
-
-    func testAPIKeyLoginIsNotTreatedAsChatGPTQuota() {
-        let account = Data(#"{"id":2,"result":{"account":{"type":"apiKey"},"requiresOpenaiAuth":true}}"#.utf8)
-        let limits = Data(#"{"id":3,"result":{"rateLimits":{"primary":{"usedPercent":25}}}}"#.utf8)
-        XCTAssertThrowsError(try parser.parse(account: account, rateLimits: limits))
-    }
-
-    func testCreditsAndSpendControlMetadataArePreserved() throws {
-        let account = Data(#"{"id":2,"result":{"account":{"type":"chatgpt","email":null,"planType":"plus"},"requiresOpenaiAuth":true}}"#.utf8)
-        let limits = Data(#"{"id":3,"result":{"rateLimits":{"primary":{"usedPercent":20},"credits":{"balance":"12.75","hasCredits":true,"unlimited":false},"individualLimit":{"limit":"100","remainingPercent":72,"resetsAt":1731552000,"used":"28"},"limitName":"Codex","rateLimitReachedType":null}}}"#.utf8)
-        let snapshot = try parser.parse(account: account, rateLimits: limits)
-        XCTAssertEqual(snapshot.credits?.remaining, Decimal(string: "12.75"))
-        XCTAssertEqual(snapshot.credits?.currencyOrUnit, "Credits")
-        XCTAssertTrue(snapshot.diagnosticMessage?.contains("个人消费限制剩余 72%") == true)
-    }
-}
-
-final class LocalQuotaSnapshotCacheTests: XCTestCase {
-    func testCachedQuotaIsFreshOnlyWithinConfiguredLifetime() async {
-        let cache = LocalQuotaSnapshotCache(lifetime: 45)
-        let storedAt = Date(timeIntervalSince1970: 1_700_000_000)
-        let snapshot = CodexUsageSnapshot(
-            id: UUID(), fetchedAt: storedAt,
-            primaryWindow: UsageLimitWindow(kind: .primary, remainingPercentage: 75, usedPercentage: 25, resetsAt: nil, durationDescription: nil),
-            sourceKind: .localCodexSession, sourceDisplayName: "test", confidence: .verified, fieldCompleteness: 0.25
-        )
-
-        await cache.store(snapshot, now: storedAt)
-
-        let fresh = await cache.freshValue(now: storedAt.addingTimeInterval(44.9))
-        let expired = await cache.freshValue(now: storedAt.addingTimeInterval(45))
-        XCTAssertEqual(fresh?.id, snapshot.id)
-        XCTAssertNil(expired)
-    }
-}
-
-final class LocalCodexQuotaRetryPolicyTests: XCTestCase {
-    func testOnlyTransientAppServerFailuresAreRetried() {
-        XCTAssertTrue(LocalCodexQuotaRetryPolicy.shouldRetry(LocalCodexSessionError.serverFailure))
-        XCTAssertTrue(LocalCodexQuotaRetryPolicy.shouldRetry(
-            LocalCodexSessionError.protocolFailure("Server overloaded; retry later.")
-        ))
-        XCTAssertTrue(LocalCodexQuotaRetryPolicy.shouldRetry(
-            LocalCodexSessionError.protocolFailure("connection reset by peer")
-        ))
-        XCTAssertFalse(LocalCodexQuotaRetryPolicy.shouldRetry(LocalCodexSessionError.notAuthorized))
-        XCTAssertFalse(LocalCodexQuotaRetryPolicy.shouldRetry(LocalCodexSessionError.invalidResponse))
-        XCTAssertFalse(LocalCodexQuotaRetryPolicy.shouldRetry(CancellationError()))
+        XCTAssertEqual(LocalCodexSessionAuthorization.preferenceKey, "reuseLocalCodexLogin")
     }
 }
 
@@ -296,56 +247,6 @@ final class OfficialAnalyticsParserTests: XCTestCase {
         XCTAssertFalse(result.has(.plugins))
         XCTAssertEqual(result.totalTokens, 2_300)
         XCTAssertEqual(result.totalThreads, 2)
-    }
-}
-
-final class CodexAppServerAccountUsageParserTests: XCTestCase {
-    private let now = Date(timeIntervalSince1970: 1_752_537_600) // 2025-07-15 00:00:00 UTC
-
-    func testAccountUsageMapsAllAvailableSummaryAndRecentDailyTokens() throws {
-        let response = Data(#"{"id":4,"result":{"summary":{"lifetimeTokens":252740130,"peakDailyTokens":18700000,"longestRunningTurnSec":7322,"currentStreakDays":4,"longestStreakDays":12},"dailyUsageBuckets":[{"startDate":"2025-06-15","tokens":999},{"startDate":"2025-07-14","tokens":1200},{"startDate":"2025-07-15","tokens":3400}]}}"#.utf8)
-
-        let result = try CodexAppServerAccountUsageParser().parse(response: response, now: now)
-
-        XCTAssertEqual(result.sourceDisplayName, "本机 Codex 用量")
-        XCTAssertTrue(result.has(.tokenUsage))
-        XCTAssertFalse(result.has(.activity))
-        XCTAssertEqual(result.dailyActivity.count, 2)
-        XCTAssertEqual(result.totalTokens, 4_600)
-        XCTAssertEqual(result.lifetimeTokens, 252_740_130)
-        XCTAssertEqual(result.peakDailyTokens, 18_700_000)
-        XCTAssertEqual(result.longestRunningTurnSeconds, 7_322)
-        XCTAssertEqual(result.currentStreakDays, 4)
-        XCTAssertEqual(result.longestStreakDays, 12)
-        XCTAssertEqual(result.totalThreads, 0)
-    }
-
-    func testMissingSummaryAndBucketsFailsClosed() {
-        let response = Data(#"{"id":4,"result":{"summary":{}}}"#.utf8)
-        XCTAssertThrowsError(try CodexAppServerAccountUsageParser().parse(response: response, now: now))
-    }
-
-    func testOfficialActivityEnrichesLocalSummaryWithoutInventingFields() throws {
-        let localData = Data(#"{"id":4,"result":{"summary":{"lifetimeTokens":5000},"dailyUsageBuckets":[{"startDate":"2025-07-15","tokens":400}]}}"#.utf8)
-        let local = try CodexAppServerAccountUsageParser().parse(response: localData, now: now)
-        let fixtureURL = try XCTUnwrap(Bundle.module.url(forResource: "analytics-partial", withExtension: "json"))
-        let official = try OfficialAnalyticsParser().parse(data: Data(contentsOf: fixtureURL))
-
-        let merged = local.merging(official)
-
-        XCTAssertEqual(merged.lifetimeTokens, 5_000)
-        XCTAssertTrue(merged.has(.tokenUsage))
-        XCTAssertTrue(merged.has(.activity))
-        XCTAssertEqual(merged.totalThreads, 2)
-        XCTAssertEqual(merged.totalTokens, 400)
-        XCTAssertTrue(merged.sourceDisplayName.contains("本机 Codex 用量"))
-        XCTAssertTrue(merged.sourceDisplayName.contains("官方页面分析"))
-    }
-
-    func testTodayTokensUsesOnlyCurrentCalendarDay() throws {
-        let response = Data(#"{"id":4,"result":{"summary":{"lifetimeTokens":5000},"dailyUsageBuckets":[{"startDate":"2025-07-14","tokens":400},{"startDate":"2025-07-15","tokens":1600}]}}"#.utf8)
-        let result = try CodexAppServerAccountUsageParser().parse(response: response, now: now)
-        XCTAssertEqual(result.tokens(on: now, calendar: Calendar(identifier: .gregorian)), 1_600)
     }
 }
 
@@ -642,16 +543,6 @@ final class RepositoryTests: XCTestCase {
         let kind = try await repository.fetch().sourceKind
         XCTAssertEqual(kind, .officialWebPage)
     }
-    func testAuthorizedLocalCodexSourcePrecedesWeb() async throws {
-        let local = value(.localCodexSession)
-        let repository = DefaultCodexUsageRepository(
-            official: StubDataSource("official", kind: .verifiedOfficial, state: .unavailable("no"), result: .failure(UsageMonitorError.noAvailableDataSource)),
-            localCodex: StubDataSource("local", kind: .localCodexSession, result: .success(local)),
-            web: StubDataSource("web", kind: .officialWebPage, result: .success(value())),
-            cache: CachedSnapshotDataSource(), estimate: LocalEstimateDataSource())
-        let kind = try await repository.fetch().sourceKind
-        XCTAssertEqual(kind, .localCodexSession)
-    }
     func testFailureFallsBackToCache() async throws {
         let cache = CachedSnapshotDataSource()
         await cache.update(value())
@@ -670,19 +561,18 @@ final class RepositoryTests: XCTestCase {
         do { _ = try await repository.fetch(); XCTFail("Expected failure") } catch { XCTAssertNotNil(error as? UsageMonitorError) }
     }
 
-    func testLocalQuotaIsMergedWithIndependentWebAnalytics() async throws {
+    func testOfficialWebQuotaIsMergedWithIndependentWebAnalytics() async throws {
         let analyticsData = try Data(contentsOf: XCTUnwrap(Bundle.module.url(forResource: "analytics-partial", withExtension: "json")))
         let analytics = try OfficialAnalyticsParser().parse(data: analyticsData)
-        let unavailable = StubDataSource("unavailable", kind: .officialWebPage, state: .unavailable("no"), result: .failure(UsageMonitorError.noAvailableDataSource))
+        let unavailable = StubDataSource("unavailable", kind: .verifiedOfficial, state: .unavailable("no"), result: .failure(UsageMonitorError.noAvailableDataSource))
         let repository = DefaultCodexUsageRepository(
             official: unavailable,
-            localCodex: StubDataSource("local", kind: .localCodexSession, result: .success(value(.localCodexSession))),
-            web: unavailable,
+            web: StubDataSource("web", kind: .officialWebPage, result: .success(value(.officialWebPage))),
             analytics: StubAnalyticsDataSource(result: .success(analytics)),
             cache: CachedSnapshotDataSource(), estimate: LocalEstimateDataSource()
         )
         let merged = try await repository.fetch()
-        XCTAssertEqual(merged.sourceKind, .localCodexSession)
+        XCTAssertEqual(merged.sourceKind, .officialWebPage)
         XCTAssertEqual(merged.analytics?.totalTokens, 2_300)
     }
 
@@ -699,7 +589,7 @@ final class RepositoryTests: XCTestCase {
             result: .failure(UsageMonitorError.noAvailableDataSource)
         )
         let repository = DefaultCodexUsageRepository(
-            official: StubDataSource("local", kind: .localCodexSession, result: .success(value(.localCodexSession))),
+            official: StubDataSource("official", kind: .verifiedOfficial, result: .success(value(.verifiedOfficial))),
             web: unavailable, analytics: counter,
             cache: CachedSnapshotDataSource(), estimate: LocalEstimateDataSource()
         )
@@ -750,6 +640,28 @@ final class NativeUISnapshotSmokeTests: XCTestCase {
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
         XCTAssertFalse(source.contains(".scaleEffect("))
+    }
+
+    func testDashboardFollowsDesignChecklistStructure() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = repositoryRoot
+            .appendingPathComponent("CodexUsageMonitor/Features/Dashboard/DashboardView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        for destination in ["概览", "使用历史", "告警", "数据来源", "设置"] {
+            XCTAssertTrue(source.contains(destination), "Missing dashboard destination: \(destination)")
+        }
+        for state in ["loading", "cached", "estimated", "offline", "unavailable", "exhausted"] {
+            XCTAssertTrue(source.contains("case \(state)"), "Missing Demo state: \(state)")
+        }
+        for plan in ["$0/月", "$8/月", "$20/月", "$100/月", "$200/月"] {
+            XCTAssertTrue(source.contains(plan), "Missing US pricing baseline: \(plan)")
+        }
+        XCTAssertTrue(source.contains("Demo"))
+        XCTAssertFalse(source.contains(".glassEffect("), "Dashboard content must not apply glassEffect directly.")
     }
 
     func testCompactUsageSummaryRendersAtMenuWidth() throws {

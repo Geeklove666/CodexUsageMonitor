@@ -75,7 +75,7 @@ struct MenuPanelView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(WebViewSession.self) private var webSession
     @Environment(\.openSettings) private var openSettings
-    @AppStorage(LocalCodexSessionAuthorization.preferenceKey) private var reuseLocalCodexLogin = false
+    @AppStorage(LocalCodexSessionAuthorization.preferenceKey) private var localCodexLogin = false
     @AppStorage(LocalRealtimeTokenAuthorization.preferenceKey) private var localRealtimeTokenUsage = false
     @State private var showsBrowserChoice = false
     @State private var showsLocalCodexConsent = false
@@ -88,7 +88,7 @@ struct MenuPanelView: View {
             progressSection
             CompactAnalyticsSummary(
                 analytics: monitor.snapshot.analytics,
-                realtimeAuthorizationRequired: reuseLocalCodexLogin && !localRealtimeTokenUsage
+                realtimeAuthorizationRequired: !localRealtimeTokenUsage
             )
             statusSection
             actions
@@ -109,15 +109,14 @@ struct MenuPanelView: View {
         } message: {
             Text("浏览器 Cookie 不会同步到监控应用。若要刷新额度，请选择“应用内登录”。")
         }
-        .alert("授权复用本机 Codex 登录？", isPresented: $showsLocalCodexConsent) {
-            Button("授权并使用") {
-                reuseLocalCodexLogin = true
-                localRealtimeTokenUsage = true
+        .alert("允许使用本机 Codex 登录读取额度？", isPresented: $showsLocalCodexConsent) {
+            Button("授权并刷新") {
+                localCodexLogin = true
                 Task { await monitor.refresh() }
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("应用将通过本机 Codex 官方 app-server 读取套餐与额度，并只扫描 ~/.codex/sessions 中的 token_count 事件计算今日 Token；不会直接读取 auth.json、登录 Token、提示词、回复或代码正文。")
+            Text("应用会调用 OpenAI 签名的本机 codex 命令读取额度数据；不会直接读取 auth.json，也不会保存 Token。")
         }
         .alert("允许读取本机实时 Token 事件？", isPresented: $showsRealtimeTokenConsent) {
             Button("授权并刷新") {
@@ -174,7 +173,7 @@ struct MenuPanelView: View {
                 }
                 .buttonStyle(CompactGlassButtonStyle())
                 .disabled(monitor.isRefreshing)
-                .help("立即刷新额度数据")
+                .help("同步刷新额度数据和今日 Token")
 
                 Button {
                     openWindow(id: "dashboard"); NSApp.activate()
@@ -183,21 +182,23 @@ struct MenuPanelView: View {
                         .symbolRenderingMode(.hierarchical)
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(CompactGlassButtonStyle(tint: AppleUI.accent))
-                .help("打开完整用量 Dashboard")
+                .buttonStyle(CompactGlassButtonStyle())
+                .help("打开完整用量面板")
             }
 
             VStack(spacing: 0) {
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 0), GridItem(.flexible())], spacing: 0) {
                     utilityButton(localCodexActionTitle, symbol: "terminal.fill") {
-                        if reuseLocalCodexLogin {
-                            if localRealtimeTokenUsage { Task { await monitor.refresh() } }
-                            else { showsRealtimeTokenConsent = true }
+                        if localCodexLogin {
+                            Task {
+                                try? await LocalCodexLoginProbe().startLogin()
+                                await monitor.refresh()
+                            }
                         } else {
                             showsLocalCodexConsent = true
                         }
                     }
-                    utilityButton("浏览器查看", symbol: "safari") {
+                    utilityButton("OpenAI 登录", symbol: "person.crop.circle") {
                         showsBrowserChoice = true
                     }
                     utilityButton("设置", symbol: "gearshape") {
@@ -208,10 +209,12 @@ struct MenuPanelView: View {
                     }
                 }
             }
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .padding(4)
+            .liquidGlassSurface(cornerRadius: 18)
+            .background(Color(nsColor: .controlAccentColor).opacity(0.025), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .strokeBorder(.primary.opacity(0.06), lineWidth: 0.7)
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.16), lineWidth: 0.6)
             }
         }
     }
@@ -220,14 +223,17 @@ struct MenuPanelView: View {
                                action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 8) {
-                Image(systemName: symbol).symbolRenderingMode(.hierarchical)
+                Image(systemName: symbol)
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(destructive ? AppleUI.danger : AppleUI.accent)
+                    .frame(width: 18)
                 Text(title).lineLimit(1).minimumScaleFactor(0.8)
                 Spacer(minLength: 0)
             }
             .font(.caption.weight(.medium))
-            .foregroundStyle(destructive ? AppleUI.danger : Color.primary)
-            .padding(.horizontal, 11)
-            .frame(maxWidth: .infinity, minHeight: 31)
+            .foregroundStyle(destructive ? AppleUI.danger : Color.primary.opacity(0.86))
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, minHeight: 34)
             .contentShape(Rectangle())
         }
         .buttonStyle(PanelUtilityButtonStyle())
@@ -249,16 +255,16 @@ struct MenuPanelView: View {
     }
 
     private var localCodexActionTitle: String {
-        if !reuseLocalCodexLogin { return "授权本机 Codex" }
-        return localRealtimeTokenUsage ? "复用本机 Codex" : "启用今日 Token"
+        localCodexLogin ? "Codex 登录" : "启用本机 Codex"
     }
 
     private func requestRefresh() {
-        if RefreshAuthorizationPolicy.requiresLocalCodexConsent(isAuthorized: reuseLocalCodexLogin) {
-            showsLocalCodexConsent = true
-        } else {
-            Task { await monitor.refresh() }
+        if !webSession.hasLoadedUsagePage {
+            openWindow(id: "login")
+            webSession.openUsagePage()
+            NSApp.activate()
         }
+        Task { await monitor.refresh() }
     }
 }
 

@@ -112,10 +112,6 @@ struct CodexUsageSnapshot: Identifiable, Sendable, Codable, Equatable {
 
 enum DataSourceAvailability: Sendable, Equatable { case available, authenticationRequired, unavailable(String) }
 
-enum RefreshAuthorizationPolicy {
-    static func requiresLocalCodexConsent(isAuthorized: Bool) -> Bool { !isAuthorized }
-}
-
 enum MonitoringStatus: String, Sendable, Equatable {
     case refreshing, live, cached, estimated, needsLogin, degraded, unavailable
 

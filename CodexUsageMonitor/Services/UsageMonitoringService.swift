@@ -88,8 +88,7 @@ final class UsageMonitoringService {
                 }
                 self.failures += 1
                 let redacted = SensitiveDataRedactor().redact(error.localizedDescription)
-                let quotaError = UserDefaults.standard.bool(forKey: LocalCodexSessionAuthorization.preferenceKey)
-                    ? redacted : "尚未授权复用本机 Codex 登录"
+                let quotaError = redacted
                 self.lastError = self.snapshot.analytics?.todayTokens == nil
                     ? quotaError : "\(quotaError)；今日 Token 保留上次结果"
                 self.logger.error("Usage refresh failed: \(redacted, privacy: .public)")

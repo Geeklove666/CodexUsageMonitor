@@ -11,9 +11,9 @@
 > [!IMPORTANT]
 > 本项目是独立开发的非官方工具，与 OpenAI 无隶属、授权或背书关系。Codex、ChatGPT 及 OpenAI 是其各自权利人的商标。
 
-当前版本：**1.8.8（Build 31）**<br>
-系统要求：**macOS 14 Sonoma 或更高版本**<br>
-架构：**Apple Silicon + Intel（Universal 2 发布包）**
+当前本地版本：**2.0.3（Build 35）**<br>
+系统要求：**macOS 15 Sequoia 至 macOS 27 测试版**<br>
+架构：**Apple Silicon（arm64）**
 
 ## 项目目标
 
@@ -31,7 +31,8 @@ Codex Usage Monitor 将额度、重置时间、Token 趋势和数据来源状态
 - 按剩余额度显示绿、蓝、黄、橙、红五档状态；
 - 360 pt 紧凑面板显示主/次额度、Token 摘要、来源和刷新状态；
 - 固定布局的按钮按压反馈，不改变弹出面板尺寸；
-- 一键刷新、打开完整面板、授权本机数据源、打开设置或退出应用。
+- 一键刷新、打开完整面板、OpenAI 登录、本机 Token 授权、设置与退出。
+- 可选启用“本机 Codex 登录”，直接使用这台 Mac 已登录 Codex 的额度数据。
 
 ### 用量和分析
 
@@ -45,7 +46,7 @@ Codex Usage Monitor 将额度、重置时间、Token 趋势和数据来源状态
 ### 稳定性和隐私
 
 - 额度与 Analytics 独立获取，较慢的分析不会阻塞额度显示；
-- 本机额度源先刷新 ChatGPT 凭据再读取额度，临时服务故障会带抖动重试一次；冷启动允许最长 45 秒，成功后 45 秒内复用真实快照；
+- 启用后优先使用本机 Codex 登录读取额度；不可用时回退到应用内隔离的 OpenAI 官方页面会话，单次请求最长 20 秒；
 - 缓存按 5/15/60 分钟区分新鲜、可用和过期状态；
 - Authorization、Cookie、Token、Session ID、Email 和敏感查询参数脱敏；
 - 页面结构变化时失败关闭，不猜测字段含义；
@@ -56,16 +57,14 @@ Codex Usage Monitor 将额度、重置时间、Token 趋势和数据来源状态
 | 优先级 | 来源 | 主要字段 | 说明 |
 |---:|---|---|---|
 | 1 | 已验证官方方式 | 当前尚无稳定 CLI 额度命令 | 保留协议入口，不调用推测接口 |
-| 2 | 本机 Codex app-server | 套餐、额度窗口、重置、Token 日汇总 | 实验性；必须由用户主动授权 |
-| 3 | 应用内官方页面 | 页面可见额度及实际返回的分析模块 | 使用独立 WKWebView 登录态，不复用浏览器 Cookie |
+| 2 | 本机 Codex 登录 | Codex app-server 返回的额度、Credits、重置窗口 | 需要用户授权，只调用 OpenAI 签名的本机 codex 命令 |
+| 3 | 应用内 OpenAI 官方页面 | 页面可见额度及实际返回的分析模块 | 使用独立 WKWebView 登录态，不复用浏览器 Cookie |
 | 4 | SwiftData 缓存 | 先前读取成功的真实快照 | 超过额度周期或 60 分钟后不作为当前数据 |
 | 5 | 本地估算 | 主额度短期趋势 | 至少需要两个真实快照并显示 `≈` |
 
 额度与 Analytics 可能来自不同来源。合并时按模块保留来源，缺失模块不会被虚构。完整调查见 [数据源调查](Docs/DataSourceInvestigation.md)。
 
 ## 本机读取范围
-
-启用“复用本机 Codex 登录”后，应用通过 Codex 自身的 `app-server` 请求账户聚合数据；不会直接打开 `~/.codex/auth.json`，也不会接收或保存登录 Token。
 
 启用“本机实时今日 Token”后，仅扫描 `~/.codex/sessions` 中结构化 `token_count` 事件的时间戳和累计数值。应用忽略提示词、回复、代码、工具输出、文件路径和消息正文。本机值不包含其他设备或尚未落盘的活动。
 
@@ -77,8 +76,7 @@ Codex Usage Monitor 将额度、重置时间、Token 趋势和数据来源状态
 
 1. 从项目 Release 下载最新 DMG；
 2. 打开 DMG，将 **Codex Usage Monitor** 拖入 **Applications**；
-3. 在“应用程序”中右键应用并选择“打开”；
-4. 未公证的开发测试包可能需要在“系统设置 → 隐私与安全性”中选择“仍要打开”。
+3. 正式包完成 Developer ID 签名与 Apple 公证，可从“应用程序”正常打开。
 
 不要关闭 Gatekeeper，也不要使用命令全局禁用 macOS 安全检查。当前仓库不附带 Developer ID 证书，维护者本地生成的 ad-hoc 包仅适合测试。
 
@@ -101,17 +99,18 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test
 ## 首次使用
 
 1. 启动应用并点击菜单栏中的 `Codex` 状态项；
-2. 选择“复用本机 Codex”，阅读隐私说明后决定是否授权；
-3. 若本机数据源不可用，可选择“浏览器查看 → 应用内登录”；
-4. 在设置中按需开启通知、登录启动、实时今日 Token 和历史保留周期；
-5. 完整 Dashboard 可查看趋势、账户摘要和数据源诊断。
+2. 如需使用本机 Codex 额度，选择“启用本机 Codex”，并确保 `codex login status` 显示已登录；
+3. 也可以选择“OpenAI 登录”，在隔离的官方页面中完成回退数据源登录；
+4. 返回菜单栏点击“刷新”；若会话未就绪，应用会再次打开登录窗口；
+5. 在设置中按需开启通知、登录启动、实时今日 Token 和历史保留周期；
+6. 完整 Dashboard 使用 Overview、Usage History、Alerts、Data Source、Settings 五个页面；当前第一版界面使用明确标记的 Demo 数据展示各类状态。
 
 官方 Usage 页面：<https://chatgpt.com/codex/settings/usage>
 
 ## 数据准确性
 
 - `verified/high`：来自明确、已验证的当前数据源；
-- `medium`：来自可能随页面或本机接口变化的来源；
+- `medium`：来自较旧但仍有效的真实快照；
 - `cached`：先前真实快照，界面显示新鲜度；
 - `estimated`：根据历史快照计算，始终带 `≈`；
 - `unavailable`：无法可靠读取，界面显示“暂无数据”而不是零。
@@ -122,7 +121,7 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test
 
 - 检测到 Codex 进程时默认约 60 秒刷新，否则约 5 分钟；
 - 额度查询和本机实时 Token 扫描并发执行，Analytics 在额度显示后于后台补充；
-- 最近一次本机真实额度会短暂复用 45 秒，防止连续点击反复触发上游约 5 秒的查询；
+- 未登录时刷新会展示登录窗口；已登录时额度请求直接使用 `no-store` 读取最新值；
 - 倒计时只在本地更新，不触发网络请求；
 - 相同数据通常不重复写入；数值变化达到 0.5%、重置时间变化、来源变化或间隔达到 10 分钟时保存快照；
 - 历史默认保留 30 天，可选 7/30/90 天；
@@ -160,10 +159,11 @@ App / DependencyContainer
 swift test
 ```
 
-当前包含 **68 项 XCTest**，覆盖：
+当前包含 **59 项 XCTest**，覆盖：
 
 - 百分比、重置时间和格式化边界；
-- 官方页面、Usage API、app-server 与 Analytics 解析；
+- 官方页面、Usage 响应与 Analytics 解析；
+- 本机 Codex app-server 额度解析；
 - 本机实时 Token 只读取 `token_count` 事件；
 - 数据源优先级、超时、缓存和估算降级；
 - SwiftData 持久化和恢复；
@@ -188,13 +188,13 @@ Scripts/package-dmg.sh
 ALLOW_ADHOC=1 Scripts/package-dmg.sh
 ```
 
-脚本生成 Universal 2 DMG、SHA-256 校验文件，并验证签名、架构和最低系统版本。ad-hoc 产物会明确命名为 `local-test`，只能在本机开发验证，不能作为可分享发行版；对外分发必须使用 Developer ID Application、Hardened Runtime 和 Apple 公证。
+脚本生成仅含 arm64 的 Apple Silicon DMG、SHA-256 校验文件，并强制验证最低 macOS 15。ad-hoc 产物会明确命名为 `local-test`，只能在本机开发验证；对外分发必须使用 Developer ID Application、Hardened Runtime 和 Apple 公证。
 
 ## 常见问题
 
 ### 一直显示 `--%`
 
-确认“复用本机 Codex 登录”已经授权；仍不可用时打开应用内登录窗口。若诊断提示页面结构变化，需更新脱敏 Fixture 和解析规则。
+打开“OpenAI 登录”确认官方页面已登录，再返回菜单栏刷新。若诊断提示页面结构变化，需更新脱敏 Fixture 和解析规则。
 
 ### 今日 Token 与官方页面不同
 
@@ -226,4 +226,4 @@ ALLOW_ADHOC=1 Scripts/package-dmg.sh
 
 ## 免责声明
 
-本软件按现状提供，不保证额度字段、网页结构或实验性本机接口长期稳定。请勿将界面数据作为账单、财务或合同依据；最终信息以 OpenAI 官方页面和账户记录为准。
+本软件按现状提供，不保证 OpenAI 官方网页结构长期不变。请勿将界面数据作为账单、财务或合同依据；最终信息以 OpenAI 官方页面和账户记录为准。

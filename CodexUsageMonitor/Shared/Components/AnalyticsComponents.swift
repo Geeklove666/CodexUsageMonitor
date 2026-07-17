@@ -206,7 +206,7 @@ struct AnalyticsDashboard: View {
     private var accountUsageSection: some View {
         AppleCard {
             VStack(alignment: .leading, spacing: 16) {
-                SectionHeading(title: "账户使用摘要", subtitle: "由本机 Codex 登录通过官方 app-server 返回")
+                SectionHeading(title: "账户使用摘要", subtitle: analytics.sourceDisplayName)
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 145), spacing: 12)], spacing: 12) {
                     if let value = analytics.lifetimeTokens {
                         tile("累计 Token", value.formatted(), "账户累计", "sum", AppleUI.accent)

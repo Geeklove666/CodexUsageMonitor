@@ -1,11 +1,11 @@
 import SwiftUI
 
 enum AppleUI {
-    static let smallRadius: CGFloat = 11
-    static let cardRadius: CGFloat = 18
-    static let heroRadius: CGFloat = 22
-    static let largeRadius: CGFloat = 24
-    static let controlHeight: CGFloat = 40
+    static let smallRadius: CGFloat = 13
+    static let cardRadius: CGFloat = 12
+    static let heroRadius: CGFloat = 12
+    static let largeRadius: CGFloat = 16
+    static let controlHeight: CGFloat = 42
 
     static let accent = Color(red: 0.16, green: 0.46, blue: 0.96)
     static let purple = Color(red: 0.48, green: 0.36, blue: 0.90)
@@ -18,44 +18,16 @@ struct AppBackground: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
-        ZStack {
-            Color(nsColor: .windowBackgroundColor)
-            if !reduceTransparency {
-                ZStack {
-                    RadialGradient(
-                        stops: [
-                            .init(color: AppleUI.accent.opacity(0.050), location: 0),
-                            .init(color: AppleUI.accent.opacity(0.018), location: 0.48),
-                            .init(color: .clear, location: 1)
-                        ],
-                        center: UnitPoint(x: 0.08, y: 0.08),
-                        startRadius: 0,
-                        endRadius: 760
-                    )
-                    RadialGradient(
-                        stops: [
-                            .init(color: AppleUI.purple.opacity(0.032), location: 0),
-                            .init(color: AppleUI.purple.opacity(0.012), location: 0.52),
-                            .init(color: .clear, location: 1)
-                        ],
-                        center: UnitPoint(x: 0.92, y: 0.88),
-                        startRadius: 0,
-                        endRadius: 820
-                    )
-                }
-                .blur(radius: 44, opaque: false)
-                .allowsHitTesting(false)
-            }
-        }
+        Color(nsColor: reduceTransparency ? .windowBackgroundColor : .controlBackgroundColor)
         .ignoresSafeArea()
     }
 }
 
 struct AppleCard<Content: View>: View {
-    var padding: CGFloat = 20
+    var padding: CGFloat = 16
     var cornerRadius: CGFloat = AppleUI.cardRadius
-    var shadowRadius: CGFloat = 8
-    var shadowY: CGFloat = 2
+    var shadowRadius: CGFloat = 0
+    var shadowY: CGFloat = 0
     var material: Material = .thinMaterial
     @ViewBuilder let content: Content
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -68,12 +40,12 @@ struct AppleCard<Content: View>: View {
             .background {
                 shape.fill(reduceTransparency
                     ? AnyShapeStyle(Color(nsColor: .controlBackgroundColor))
-                    : AnyShapeStyle(material))
+                    : AnyShapeStyle(Color(nsColor: .controlBackgroundColor)))
             }
             .overlay {
-                shape.strokeBorder(.primary.opacity(contrast == .increased ? 0.18 : 0.075), lineWidth: contrast == .increased ? 1 : 0.7)
+                shape.strokeBorder(Color(nsColor: .separatorColor).opacity(contrast == .increased ? 0.55 : 0.28),
+                                   lineWidth: contrast == .increased ? 1 : 0.75)
             }
-            .shadow(color: .black.opacity(shadowRadius > 12 ? 0.055 : 0.035), radius: shadowRadius, y: shadowY)
     }
 }
 
@@ -101,7 +73,11 @@ struct SymbolTile: View {
             .symbolRenderingMode(.hierarchical)
             .foregroundStyle(color)
             .frame(width: 30, height: 30)
-            .background(color.opacity(0.11), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(.white.opacity(0.12), lineWidth: 0.6)
+            }
     }
 }
 
@@ -113,7 +89,7 @@ struct PrimaryActionButtonStyle: ButtonStyle {
             .foregroundStyle(.white)
             .frame(minHeight: AppleUI.controlHeight)
             .padding(.horizontal, 20)
-            .background(AppleUI.accent.opacity(configuration.isPressed ? 0.78 : 1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .liquidGlassSurface(cornerRadius: 14, tint: AppleUI.accent, interactive: true)
             .opacity(feedback.contentOpacity)
     }
 }
@@ -123,14 +99,12 @@ struct GlassButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         let feedback = StableButtonPressFeedback(isPressed: configuration.isPressed)
-        let shape = RoundedRectangle(cornerRadius: 11, style: .continuous)
         configuration.label
             .font(.subheadline.weight(.semibold))
             .padding(.horizontal, 15)
-            .frame(minHeight: 36)
-            .background(.thinMaterial, in: shape)
-            .overlay { shape.fill((tint ?? Color.primary).opacity(feedback.fillOpacity)) }
-            .overlay { shape.strokeBorder(.primary.opacity(0.07), lineWidth: 0.7) }
+            .frame(minHeight: 38)
+            .liquidGlassSurface(cornerRadius: 14, tint: tint, interactive: true)
+            .background((tint ?? Color.primary).opacity(feedback.fillOpacity), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             .opacity(feedback.contentOpacity)
     }
 }
@@ -139,24 +113,62 @@ struct CompactGlassButtonStyle: ButtonStyle {
     var tint: Color? = nil
 
     func makeBody(configuration: Configuration) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
         let feedback = StableButtonPressFeedback(isPressed: configuration.isPressed)
         configuration.label
             .font(.subheadline.weight(.semibold))
             .padding(.horizontal, 12)
-            .frame(minHeight: 34)
-            .background(.thinMaterial, in: shape)
-            .overlay { shape.fill((tint ?? Color.primary).opacity(feedback.fillOpacity)) }
-            .overlay { shape.strokeBorder(.primary.opacity(0.065), lineWidth: 0.7) }
+            .frame(minHeight: 36)
+            .liquidGlassSurface(cornerRadius: 13, tint: tint, interactive: true)
+            .background((tint ?? Color.primary).opacity(feedback.fillOpacity), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
             .opacity(feedback.contentOpacity)
     }
 }
 
+extension View {
+    /// Uses native Liquid Glass on macOS 26 and later, with a system-material
+    /// fallback that preserves contrast and geometry on macOS 15.
+    @ViewBuilder
+    func liquidGlassSurface(cornerRadius: CGFloat, tint: Color? = nil, interactive: Bool = false) -> some View {
+        if #available(macOS 26.0, *) {
+            let glass = tint.map { Glass.regular.tint($0) } ?? Glass.regular
+            self.glassEffect(
+                interactive ? glass.interactive() : glass,
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            )
+        } else {
+            let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            self
+                .background(.ultraThinMaterial, in: shape)
+                .overlay { shape.fill((tint ?? Color.primary).opacity(tint == nil ? 0.018 : 0.055)) }
+                .overlay {
+                    shape.strokeBorder(
+                        LinearGradient(
+                            colors: [.white.opacity(0.18), .primary.opacity(0.065)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 0.75
+                    )
+                }
+        }
+    }
+}
+
 struct PanelUtilityButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
     func makeBody(configuration: Configuration) -> some View {
         let feedback = StableButtonPressFeedback(isPressed: configuration.isPressed)
+        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
         configuration.label
-            .background(Color.primary.opacity(configuration.isPressed ? 0.065 : 0))
+            .background {
+                shape.fill(reduceTransparency
+                    ? Color(nsColor: .controlBackgroundColor).opacity(configuration.isPressed ? 0.92 : 0.62)
+                    : Color.white.opacity(configuration.isPressed ? 0.14 : 0.055))
+            }
+            .overlay {
+                shape.strokeBorder(Color(nsColor: .separatorColor).opacity(configuration.isPressed ? 0.20 : 0.08), lineWidth: 0.5)
+            }
             .opacity(feedback.contentOpacity)
     }
 }

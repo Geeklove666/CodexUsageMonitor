@@ -22,7 +22,7 @@ struct CodexUsageMonitorApp: App {
                 .modelContainer(container.history.container)
                 .frame(minWidth: 720, minHeight: 520)
         }
-        .defaultSize(width: 860, height: 620)
+        .defaultSize(width: 960, height: 680)
 
         Window("Codex Usage 登录", id: "login") {
             LoginView().environment(container.webSession).frame(minWidth: 760, minHeight: 600)
@@ -37,9 +37,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.register(defaults: [
             "smartRefresh": true, "notificationsEnabled": false,
             "notifyEvery20": true, "notifyReset": true,
-            LocalCodexSessionAuthorization.preferenceKey: false,
-            LocalCodexSessionAuthorization.allowCustomExecutableKey: false,
-            "officialWebAnalyticsEnrichment": false,
             LocalRealtimeTokenAuthorization.preferenceKey: false,
             "activeRefreshSeconds": 60, "idleRefreshSeconds": 300, "retentionDays": 30
         ])
