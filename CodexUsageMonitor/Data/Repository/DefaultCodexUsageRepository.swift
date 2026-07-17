@@ -63,7 +63,7 @@ actor DefaultCodexUsageRepository {
             }
             let start = ContinuousClock.now
             do {
-                let value = try await withTimeout(requestTimeout) { try await source.fetchUsage() }
+                let value = try await withTimeout(timeout(for: source)) { try await source.fetchUsage() }
                 let duration = start.duration(to: .now).seconds
                 attempts.append(DataSourceAttemptDiagnostic(
                     sourceIdentifier: source.identifier,
@@ -112,6 +112,10 @@ actor DefaultCodexUsageRepository {
     }
 
     func currentDiagnostic() -> DataSourceDiagnostic { diagnostic }
+
+    private func timeout(for source: any CodexUsageDataSource) -> Duration {
+        source.sourceKind == .localCodexSession ? .seconds(45) : requestTimeout
+    }
 
     func fetchAnalytics(for snapshot: CodexUsageSnapshot) async -> CodexUsageSnapshot {
         var combined = snapshot.analytics

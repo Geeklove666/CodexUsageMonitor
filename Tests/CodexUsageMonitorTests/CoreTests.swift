@@ -212,6 +212,25 @@ final class LocalCodexSessionParserTests: XCTestCase {
         XCTAssertEqual(snapshot.resetAllowance?.availableCount, 3)
         XCTAssertEqual(LocalCodexSessionAuthorization.preferenceKey, "reuseLocalCodexLogin")
     }
+
+    func testAppServerRateLimitsAcceptNullResetCreditList() throws {
+        let reset = Int(Date.now.addingTimeInterval(3_600).timeIntervalSince1970)
+        let account = """
+        {"id":2,"result":{"account":{"type":"chatgpt","planType":"plus"},"requiresOpenaiAuth":true}}
+        """.data(using: .utf8)!
+        let limits = """
+        {"id":3,"result":{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":0,"windowDurationMins":10080,"resetsAt":\(reset)},"secondary":null,"credits":{"hasCredits":true,"unlimited":false,"balance":"2184.4377075000"},"individualLimit":null,"spendControlReached":false,"planType":"plus","rateLimitReachedType":null},"rateLimitResetCredits":{"availableCount":1,"credits":null}}}
+        """.data(using: .utf8)!
+
+        let snapshot = try CodexAppServerRateLimitParser().parse(account: account, rateLimits: limits)
+
+        XCTAssertEqual(snapshot.planName, "plus")
+        XCTAssertEqual(snapshot.primaryWindow?.remainingPercentage, 100)
+        XCTAssertEqual(snapshot.secondaryWindow, nil)
+        XCTAssertEqual(snapshot.credits?.remaining, Decimal(string: "2184.4377075000"))
+        XCTAssertEqual(snapshot.resetAllowance?.availableCount, 1)
+        XCTAssertEqual(snapshot.resetAllowance?.credits, [])
+    }
 }
 
 final class OfficialAnalyticsParserTests: XCTestCase {
@@ -683,6 +702,19 @@ final class NativeUISnapshotSmokeTests: XCTestCase {
         XCTAssertTrue(source.contains("真实刷新诊断"))
         XCTAssertTrue(source.contains("Demo"))
         XCTAssertFalse(source.contains(".glassEffect("), "Dashboard content must not apply glassEffect directly.")
+    }
+
+    func testEnabledLocalCodexMenuActionDoesNotStartLoginFlow() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = repositoryRoot
+            .appendingPathComponent("CodexUsageMonitor/Features/MenuBar/MenuBarViews.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("localCodexLogin ? \"刷新本机 Codex\" : \"启用本机 Codex\""))
+        XCTAssertFalse(source.contains("try? await LocalCodexLoginProbe().startLogin()"))
     }
 
     func testCompactUsageSummaryRendersAtMenuWidth() throws {

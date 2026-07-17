@@ -199,10 +199,7 @@ struct MenuPanelView: View {
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 0), GridItem(.flexible())], spacing: 0) {
                     utilityButton(localCodexActionTitle, symbol: "terminal.fill") {
                         if localCodexLogin {
-                            Task {
-                                try? await LocalCodexLoginProbe().startLogin()
-                                await monitor.refresh()
-                            }
+                            Task { await monitor.refresh() }
                         } else {
                             showsLocalCodexConsent = true
                         }
@@ -264,7 +261,7 @@ struct MenuPanelView: View {
     }
 
     private var localCodexActionTitle: String {
-        localCodexLogin ? "Codex 登录" : "启用本机 Codex"
+        localCodexLogin ? "刷新本机 Codex" : "启用本机 Codex"
     }
 
     private func requestRefresh() {

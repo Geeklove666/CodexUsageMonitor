@@ -194,7 +194,12 @@ struct LocalCodexSessionDataSource: CodexUsageDataSource, CodexAnalyticsDataSour
             try await Task.sleep(for: .milliseconds(Int.random(in: 700...1_300)))
             responses = try await client.readAccountAndRateLimits()
         }
-        let quota = try parser.parse(account: responses.account, rateLimits: responses.rateLimits)
+        let quota: CodexUsageSnapshot
+        do {
+            quota = try parser.parse(account: responses.account, rateLimits: responses.rateLimits)
+        } catch is DecodingError {
+            throw LocalCodexSessionError.invalidResponse
+        }
         await quotaCache.store(quota)
         return quota
     }
@@ -206,12 +211,20 @@ struct LocalCodexSessionDataSource: CodexUsageDataSource, CodexAnalyticsDataSour
             throw LocalCodexSessionError.notAuthorized
         }
         if let cached = await accountUsageCache.freshValue() {
-            return try usageParser.parse(response: cached)
+            do {
+                return try usageParser.parse(response: cached)
+            } catch is DecodingError {
+                throw LocalCodexSessionError.invalidResponse
+            }
         }
         guard let executable = locator.locate() else { throw LocalCodexSessionError.executableMissing }
         let response = try await CodexAppServerClient(executable: executable).readAccountUsage()
         await accountUsageCache.store(response)
-        return try usageParser.parse(response: response)
+        do {
+            return try usageParser.parse(response: response)
+        } catch is DecodingError {
+            throw LocalCodexSessionError.invalidResponse
+        }
     }
 }
 
@@ -527,7 +540,7 @@ struct CodexAppServerRateLimitParser: Sendable {
 
     private func makeResetAllowance(_ value: ResetCreditsSnapshot?) -> UsageResetAllowance? {
         guard let value else { return nil }
-        let credits = value.credits.map {
+        let credits = (value.credits ?? []).map {
             UsageResetCredit(
                 resetType: $0.resetType,
                 status: $0.status,
@@ -536,7 +549,7 @@ struct CodexAppServerRateLimitParser: Sendable {
                 title: $0.title
             )
         }
-        return UsageResetAllowance(availableCount: value.availableCount, credits: credits)
+        return UsageResetAllowance(availableCount: value.availableCount ?? 0, credits: credits)
     }
 
     private func makeWindow(_ value: RateWindow?, kind: UsageWindowKind) -> UsageLimitWindow? {
@@ -628,8 +641,8 @@ private struct RateLimitsResult: Decodable {
 }
 
 private struct ResetCreditsSnapshot: Decodable {
-    let availableCount: Int
-    let credits: [ResetCreditSnapshot]
+    let availableCount: Int?
+    let credits: [ResetCreditSnapshot]?
 }
 
 private struct ResetCreditSnapshot: Decodable {

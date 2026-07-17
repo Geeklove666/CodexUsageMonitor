@@ -10,7 +10,7 @@
 - Swift 6.4
 - 项目使用 Swift Package；命令显式设置 `DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer`
 
-## 2.0.13 发布构建
+## 2.0.14 发布构建
 
 执行：
 
@@ -18,7 +18,7 @@
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift build
 ```
 
-最终结果：成功，0 个错误。当前版本为 2.0.13（Build 45），最低部署版本 macOS 15.0。产品包只面向 Apple Silicon，正式打包脚本使用 `--arch arm64`，并验证最终二进制只包含 `arm64`。
+最终结果：成功，0 个错误。当前版本为 2.0.14（Build 46），最低部署版本 macOS 15.0。产品包只面向 Apple Silicon，正式打包脚本使用 `--arch arm64`，并验证最终二进制只包含 `arm64`。
 
 ## XCTest
 
@@ -28,11 +28,11 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift build
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test
 ```
 
-最终结果：61 个 XCTest 全部通过，0 个失败、0 个未执行。覆盖 WebView 注入脚本、今日 Token、官方页面额度来源、本机 Codex app-server 额度解析、字段来源合并、缓存刷新状态、Analytics 缓存恢复、自动刷新频率、真实刷新诊断、Credits 两位小数显示、DESIGN.md Dashboard 结构，以及设计系统不再应用缩放变换的回归。
+最终结果：63 个 XCTest 全部通过，0 个失败、0 个未执行。覆盖 WebView 注入脚本、今日 Token、官方页面额度来源、本机 Codex app-server 额度解析、字段来源合并、缓存刷新状态、Analytics 缓存恢复、自动刷新频率、真实刷新诊断、Credits 两位小数显示、本机 Codex 空 reset credits 兼容、菜单按钮不重复启动登录流程、DESIGN.md Dashboard 结构，以及设计系统不再应用缩放变换的回归。
 
 ## 数据源调整
 
-2.0.1 重新加入用户授权的“本机 Codex 登录”额度读取链路。实现会先用 stable 的 `codex login status` 检查本机登录，再调用 OpenAI 签名的本机 `codex app-server --stdio` 读取额度；由于 app-server 官方成熟度仍为 Experimental，它只作为可选优先源，失败时继续回退到 App 内隔离的 OpenAI 官方 WebKit 会话、缓存与估算。本机 Token 统计仍为单独授权的本地读取能力。
+2.0.1 重新加入用户授权的“本机 Codex 登录”额度读取链路。实现会先用 stable 的 `codex login status` 检查本机登录，再调用 OpenAI 签名的本机 `codex app-server --stdio` 读取额度；由于 app-server 官方成熟度仍为 Experimental，它只作为可选优先源，失败时继续回退到 App 内隔离的 OpenAI 官方 WebKit 会话、缓存与估算。本机 Token 统计仍为单独授权的本地读取能力。2.0.14 兼容 `rateLimitResetCredits.credits: null` 的真实返回结构，并把本机 Codex 额度读取超时单独放宽至 45 秒。
 
 ## UI 调整
 
@@ -42,14 +42,14 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test
 
 本地安装到 `/Applications/Codex Usage Monitor.app` 后启动成功，进程保持运行，没有立即崩溃。该测试验证的是本机可启动，不等同于跨 Mac 可分发签名验证。
 
-## 2.0.13 本机测试 DMG
+## 2.0.14 本机测试 DMG
 
-- 文件：`Codex-Usage-Monitor-2.0.13-local-test-apple-silicon.dmg`；
+- 文件：`Codex-Usage-Monitor-2.0.14-local-test-apple-silicon.dmg`；
 - 架构：`arm64`；
 - 最低 macOS：15.0；
 - 签名：ad-hoc，仅供本机开发测试，不能作为跨 Mac 分享版；
 - Apple 公证票据：无；
-- SHA-256：`ee2b22bc2cda9559bc2cba0d495e6b4483363a5dc310c4a8c92accd4d1f1c33d`。
+- SHA-256：`6532a227da062deef86d1afb5dfdf7a30eaef3aac71299a060adaeb661675ccb`。
 
 ## 发布阻塞项
 
@@ -57,4 +57,4 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test
 
 ## GitHub 状态
 
-2.0.13 经用户明确要求同步 GitHub，完成提交、推送和 GitHub Release。
+2.0.14 经用户明确要求同步 GitHub，完成提交、推送和 GitHub Release。
