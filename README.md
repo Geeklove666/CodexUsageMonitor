@@ -11,7 +11,7 @@
 > [!IMPORTANT]
 > 本项目是独立开发的非官方工具，与 OpenAI 无隶属、授权或背书关系。Codex、ChatGPT 及 OpenAI 是其各自权利人的商标。
 
-当前版本：**1.8.7（Build 30）**<br>
+当前版本：**1.8.8（Build 31）**<br>
 系统要求：**macOS 14 Sonoma 或更高版本**<br>
 架构：**Apple Silicon + Intel（Universal 2 发布包）**
 
@@ -45,7 +45,7 @@ Codex Usage Monitor 将额度、重置时间、Token 趋势和数据来源状态
 ### 稳定性和隐私
 
 - 额度与 Analytics 独立获取，较慢的分析不会阻塞额度显示；
-- 本机额度源允许最长 35 秒冷启动、其他来源 15 秒请求超时；成功后 45 秒内复用真实快照，连续失败按 1/2/5/10/30 分钟指数退避；
+- 本机额度源先刷新 ChatGPT 凭据再读取额度，临时服务故障会带抖动重试一次；冷启动允许最长 45 秒，成功后 45 秒内复用真实快照；
 - 缓存按 5/15/60 分钟区分新鲜、可用和过期状态；
 - Authorization、Cookie、Token、Session ID、Email 和敏感查询参数脱敏；
 - 页面结构变化时失败关闭，不猜测字段含义；
@@ -160,7 +160,7 @@ App / DependencyContainer
 swift test
 ```
 
-当前包含 **67 项 XCTest**，覆盖：
+当前包含 **68 项 XCTest**，覆盖：
 
 - 百分比、重置时间和格式化边界；
 - 官方页面、Usage API、app-server 与 Analytics 解析；
@@ -188,7 +188,7 @@ Scripts/package-dmg.sh
 ALLOW_ADHOC=1 Scripts/package-dmg.sh
 ```
 
-脚本生成 Universal 2 DMG、SHA-256 校验文件，并验证签名、架构和最低系统版本。
+脚本生成 Universal 2 DMG、SHA-256 校验文件，并验证签名、架构和最低系统版本。ad-hoc 产物会明确命名为 `local-test`，只能在本机开发验证，不能作为可分享发行版；对外分发必须使用 Developer ID Application、Hardened Runtime 和 Apple 公证。
 
 ## 常见问题
 

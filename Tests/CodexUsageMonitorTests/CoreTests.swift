@@ -230,6 +230,21 @@ final class LocalQuotaSnapshotCacheTests: XCTestCase {
     }
 }
 
+final class LocalCodexQuotaRetryPolicyTests: XCTestCase {
+    func testOnlyTransientAppServerFailuresAreRetried() {
+        XCTAssertTrue(LocalCodexQuotaRetryPolicy.shouldRetry(LocalCodexSessionError.serverFailure))
+        XCTAssertTrue(LocalCodexQuotaRetryPolicy.shouldRetry(
+            LocalCodexSessionError.protocolFailure("Server overloaded; retry later.")
+        ))
+        XCTAssertTrue(LocalCodexQuotaRetryPolicy.shouldRetry(
+            LocalCodexSessionError.protocolFailure("connection reset by peer")
+        ))
+        XCTAssertFalse(LocalCodexQuotaRetryPolicy.shouldRetry(LocalCodexSessionError.notAuthorized))
+        XCTAssertFalse(LocalCodexQuotaRetryPolicy.shouldRetry(LocalCodexSessionError.invalidResponse))
+        XCTAssertFalse(LocalCodexQuotaRetryPolicy.shouldRetry(CancellationError()))
+    }
+}
+
 final class OfficialAnalyticsParserTests: XCTestCase {
     func testCapturedAnalyticsResponsesAreAggregatedWithoutInventingData() throws {
         let json = #"""

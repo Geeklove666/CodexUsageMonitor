@@ -7,8 +7,8 @@ Codex Usage Monitor 安装说明
 
 安装
 1. 将“Codex Usage Monitor”拖到旁边的 Applications 文件夹。
-2. 前往“应用程序”，右键点按 Codex Usage Monitor，选择“打开”。
-3. 如果系统仍提示无法验证开发者，请先尝试启动一次，然后打开“系统设置 → 隐私与安全性”，在安全性区域选择“仍要打开”。该按钮通常只在尝试启动后的一段时间内显示。
+2. 正式分享版经过 Developer ID 签名与 Apple 公证，前往“应用程序”正常打开即可。
+3. 文件名带 local-test 的包只供开发者本机验证，不应发送到其他 Mac。若确实在可信的内部测试中使用，可右键点按 App 选择“打开”，或在首次拦截后前往“系统设置 → 隐私与安全性”选择“仍要打开”。
 
 首次使用
 • 点击菜单栏中的 Codex 状态项。
@@ -18,5 +18,5 @@ Codex Usage Monitor 安装说明
 
 说明
 • 这是独立开发的非官方工具，不是 OpenAI 官方产品。
-• 未经 Apple Developer ID 签名和公证的测试包，首次启动可能需要手动确认。
+• 文件名带 local-test 的包未经 Developer ID 签名和 Apple 公证，不能作为公开发行包。
 • 不需要关闭 Gatekeeper，也不要使用命令全局禁用 macOS 安全检查。

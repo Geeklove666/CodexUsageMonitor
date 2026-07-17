@@ -114,7 +114,14 @@ struct LocalCodexSessionDataSource: CodexUsageDataSource, CodexAnalyticsDataSour
         }
         if let cached = await quotaCache.freshValue() { return cached }
         guard let executable = locator.locate() else { throw LocalCodexSessionError.executableMissing }
-        let responses = try await CodexAppServerClient(executable: executable).readAccountAndRateLimits()
+        let client = CodexAppServerClient(executable: executable)
+        let responses: CodexAppServerResponses
+        do {
+            responses = try await client.readAccountAndRateLimits()
+        } catch where LocalCodexQuotaRetryPolicy.shouldRetry(error) {
+            try await Task.sleep(for: .milliseconds(Int.random(in: 700...1_300)))
+            responses = try await client.readAccountAndRateLimits()
+        }
         let quota = try parser.parse(account: responses.account, rateLimits: responses.rateLimits)
         await quotaCache.store(quota)
         return quota
@@ -133,6 +140,18 @@ struct LocalCodexSessionDataSource: CodexUsageDataSource, CodexAnalyticsDataSour
         let response = try await CodexAppServerClient(executable: executable).readAccountUsage()
         await accountUsageCache.store(response)
         return try usageParser.parse(response: response)
+    }
+}
+
+enum LocalCodexQuotaRetryPolicy {
+    static func shouldRetry(_ error: Error) -> Bool {
+        if error is CancellationError { return false }
+        if case LocalCodexSessionError.serverFailure = error { return true }
+        guard case LocalCodexSessionError.protocolFailure(let message) = error else { return false }
+        let normalized = message.lowercased()
+        return ["overloaded", "temporarily", "unavailable", "timeout", "timed out",
+                "connection reset", "connection refused", "broken pipe", "服务暂时"]
+            .contains { normalized.contains($0) }
     }
 }
 
@@ -179,13 +198,7 @@ struct CodexAppServerClient: Sendable {
     let executable: URL
 
     func readAccountAndRateLimits() async throws -> CodexAppServerResponses {
-        let output: Data
-        do {
-            output = try await runAccountAndRateLimits(refreshToken: false)
-        } catch LocalCodexSessionError.protocolFailure(let message)
-                    where Self.isAuthenticationFailure(message) {
-            output = try await runAccountAndRateLimits(refreshToken: true)
-        }
+        let output = try await runAccountAndRateLimits()
 
         var account: Data?
         var rateLimits: Data?
@@ -206,13 +219,13 @@ struct CodexAppServerClient: Sendable {
         return CodexAppServerResponses(account: account, rateLimits: rateLimits)
     }
 
-    private func runAccountAndRateLimits(refreshToken: Bool) async throws -> Data {
+    private func runAccountAndRateLimits() async throws -> Data {
         let runner = CodexAppServerProcess(executable: executable)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 DispatchQueue.global(qos: .utility).async {
                     do {
-                        continuation.resume(returning: try runner.run(refreshToken: refreshToken))
+                        continuation.resume(returning: try runner.run())
                     } catch {
                         continuation.resume(throwing: error)
                     }
@@ -221,12 +234,6 @@ struct CodexAppServerClient: Sendable {
         } onCancel: {
             runner.stop()
         }
-    }
-
-    private static func isAuthenticationFailure(_ message: String) -> Bool {
-        let normalized = message.lowercased()
-        return normalized.contains("auth") || normalized.contains("token")
-            || normalized.contains("unauthorized") || normalized.contains("登录")
     }
 
     func readAccountUsage() async throws -> Data {
@@ -270,15 +277,15 @@ private final class CodexAppServerProcess: @unchecked Sendable {
         }
     }
 
-    func run(refreshToken: Bool) throws -> Data {
+    func run() throws -> Data {
         try start()
         defer { finish() }
-        try send("{\"method\":\"account/read\",\"id\":2,\"params\":{\"refreshToken\":\(refreshToken)}}")
+        // Refresh the persisted ChatGPT credential first. Sending rateLimits/read
+        // concurrently can race the refresh and intermittently fail on cold sessions.
+        try send(#"{"method":"account/read","id":2,"params":{"refreshToken":true}}"#)
+        let account = try readResponse(id: 2)
         try send(#"{"method":"account/rateLimits/read","id":3}"#)
-        let responses = try readResponses(ids: [2, 3])
-        guard let account = responses[2], let rateLimits = responses[3] else {
-            throw LocalCodexSessionError.invalidResponse
-        }
+        let rateLimits = try readResponse(id: 3)
         let data = account + Data([0x0A]) + rateLimits + Data([0x0A])
         try checkCancellation()
         return data
@@ -348,23 +355,6 @@ private final class CodexAppServerProcess: @unchecked Sendable {
             return line
         }
         throw LocalCodexSessionError.invalidResponse
-    }
-
-    private func readResponses(ids expectedIDs: Set<Int>) throws -> [Int: Data] {
-        var responses: [Int: Data] = [:]
-        for _ in 0..<200 where responses.count < expectedIDs.count {
-            let line = try readLine()
-            guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-                  let id = (object["id"] as? NSNumber)?.intValue,
-                  expectedIDs.contains(id) else { continue }
-            if let error = object["error"] as? [String: Any] {
-                let message = SensitiveDataRedactor().redact(error["message"] as? String ?? "未知服务错误")
-                throw LocalCodexSessionError.protocolFailure(message)
-            }
-            responses[id] = line
-        }
-        guard responses.count == expectedIDs.count else { throw LocalCodexSessionError.invalidResponse }
-        return responses
     }
 
     private func readLine() throws -> Data {

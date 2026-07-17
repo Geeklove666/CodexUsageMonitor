@@ -2,6 +2,20 @@
 
 本项目采用 `主版本.次版本.修订版本` 格式。日期使用 Asia/Shanghai 时区。
 
+## 1.8.8 — 2026-07-17
+
+### 修复
+
+- app-server 额度读取改为先完成 `account/read(refreshToken: true)`，再调用 `account/rateLimits/read`，消除冷会话中的凭据刷新竞态；
+- 对服务暂时不可用、overloaded、timeout、连接重置等瞬时故障增加一次 0.7–1.3 秒抖动重试；
+- 本机额度冷启动总容限调整为 45 秒，继续保留成功后的 45 秒短缓存；
+- 新增瞬时故障重试策略测试，总计 68 项 XCTest。
+
+### 分发
+
+- ad-hoc 构建产物强制带 `local-test` 文件名，并在构建输出中明确警告不能跨 Mac 分享；
+- 正式 DMG 继续强制要求 Developer ID Application 与 Apple 公证，避免把本机测试包误发给其他用户。
+
 ## 1.8.7 — 2026-07-16
 
 ### 修复

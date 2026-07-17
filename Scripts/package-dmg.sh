@@ -33,7 +33,11 @@ RESOURCE_BUNDLE="$PRODUCTS_DIR/CodexUsageMonitor_CodexUsageMonitor.bundle"
 DIST_DIR="$ROOT_DIR/Dist"
 WORK_DIR="$DIST_DIR/.package-work"
 APP_PATH="$DIST_DIR/$APP_NAME.app"
-DMG_NAME="Codex-Usage-Monitor-$VERSION-universal.dmg"
+if [[ "$SIGNING_IDENTITY" == "-" ]]; then
+  DMG_NAME="Codex-Usage-Monitor-$VERSION-local-test-universal.dmg"
+else
+  DMG_NAME="Codex-Usage-Monitor-$VERSION-universal.dmg"
+fi
 DMG_PATH="$DIST_DIR/$DMG_NAME"
 
 echo "Building Universal 2 release for macOS 14+..."
@@ -97,6 +101,11 @@ if [[ -n "${NOTARY_PROFILE:-}" && "$SIGNING_IDENTITY" != "-" ]]; then
   xcrun stapler staple "$DMG_PATH"
   xcrun stapler validate "$DMG_PATH"
   spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG_PATH"
+fi
+
+if [[ "$SIGNING_IDENTITY" == "-" ]]; then
+  echo "警告：这是 ad-hoc 签名的本机测试包，不能作为可分享发行版。" >&2
+  echo "其他 Mac 的 Gatekeeper 可能拒绝启动；正式分发必须使用 Developer ID 并完成公证。" >&2
 fi
 
 ARCHS="$(lipo -archs "$APP_PATH/Contents/MacOS/$EXECUTABLE_NAME")"

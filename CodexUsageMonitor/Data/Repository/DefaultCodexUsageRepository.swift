@@ -23,7 +23,7 @@ actor DefaultCodexUsageRepository {
          analytics: (any CodexAnalyticsDataSource)? = nil,
          analyticsSources: [any CodexAnalyticsDataSource] = [],
          cache: CachedSnapshotDataSource, estimate: LocalEstimateDataSource,
-         requestTimeout: Duration = .seconds(15), localQuotaTimeout: Duration = .seconds(35),
+         requestTimeout: Duration = .seconds(15), localQuotaTimeout: Duration = .seconds(45),
          analyticsTimeout: Duration = .seconds(8)) {
         self.official = official; self.localCodex = localCodex; self.web = web
         self.analyticsSources = analyticsSources.isEmpty ? analytics.map { [$0] } ?? [] : analyticsSources
