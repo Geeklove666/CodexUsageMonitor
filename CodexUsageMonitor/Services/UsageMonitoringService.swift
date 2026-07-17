@@ -4,6 +4,8 @@ import OSLog
 
 @MainActor @Observable
 final class UsageMonitoringService {
+    static let refreshIntervalPreferenceKey = "autoRefreshSeconds"
+
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "local.codex-usage-monitor", category: "monitoring")
     private let repository: DefaultCodexUsageRepository
     private let history: UsageHistoryStore
@@ -38,15 +40,25 @@ final class UsageMonitoringService {
 
     func start() {
         guard loopTask == nil else { return }
+        startLoop(refreshImmediately: true)
+    }
+
+    func restartRefreshLoop() {
+        loopTask?.cancel()
+        loopTask = nil
+        startLoop(refreshImmediately: false)
+    }
+
+    private func startLoop(refreshImmediately: Bool) {
         loopTask = Task { [weak self] in
-            await self?.refresh()
+            if refreshImmediately { await self?.refresh() }
             while !Task.isCancelled {
                 guard let self else { return }
                 self.now = .now
                 let defaults = UserDefaults.standard
-                let active = max(30, defaults.double(forKey: "activeRefreshSeconds"))
-                let idle = max(30, defaults.double(forKey: "idleRefreshSeconds"))
-                let base = defaults.bool(forKey: "smartRefresh") ? (self.processMonitor.isActive() ? active : idle) : idle
+                let configured = defaults.object(forKey: Self.refreshIntervalPreferenceKey) as? Int
+                    ?? AutoRefreshFrequency.defaultValue.rawValue
+                let base = Double(AutoRefreshFrequency.sanitizedSeconds(configured))
                 let backoff = [0.0, 60, 120, 300, 600, 1800][min(self.failures, 5)]
                 let delay = max(base, backoff) * Double.random(in: 0.95...1.05)
                 try? await Task.sleep(for: .seconds(delay))

@@ -10,7 +10,7 @@
 - Swift 6.4
 - 项目使用 Swift Package；命令显式设置 `DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer`
 
-## 2.0.4 本地开发构建
+## 2.0.11 本地开发构建
 
 执行：
 
@@ -18,7 +18,7 @@
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift build
 ```
 
-最终结果：成功，0 个错误。当前版本为 2.0.4（Build 36），最低部署版本 macOS 15.0。产品包只面向 Apple Silicon，正式打包脚本使用 `--arch arm64`，并验证最终二进制只包含 `arm64`。
+最终结果：成功，0 个错误。当前版本为 2.0.11（Build 43），最低部署版本 macOS 15.0。产品包只面向 Apple Silicon，正式打包脚本使用 `--arch arm64`，并验证最终二进制只包含 `arm64`。
 
 ## XCTest
 
@@ -28,7 +28,7 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift build
 DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test
 ```
 
-最终结果：59 个 XCTest 全部通过，0 个失败、0 个未执行。覆盖 WebView 注入脚本、今日 Token、官方页面额度来源、本机 Codex app-server 额度解析、字段来源合并、缓存刷新状态、Analytics 缓存恢复、DESIGN.md Dashboard 结构，以及设计系统不再应用缩放变换的回归。
+最终结果：60 个 XCTest 全部通过，0 个失败、0 个未执行。覆盖 WebView 注入脚本、今日 Token、官方页面额度来源、本机 Codex app-server 额度解析、字段来源合并、缓存刷新状态、Analytics 缓存恢复、自动刷新频率、DESIGN.md Dashboard 结构，以及设计系统不再应用缩放变换的回归。
 
 ## 数据源调整
 
@@ -36,20 +36,30 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test
 
 ## UI 调整
 
-界面按 Apple's Liquid Glass Design 重新整理：macOS 26 及以上使用原生 Liquid Glass 效果，macOS 15 使用系统 Material 降级方案。按钮按压态只改变透明度和填充，不再使用放大缩放，避免点击整块面板被放大的问题。2.0.2 进一步移除“更新今日 Token”独立按钮，改由“刷新”同步刷新额度和今日 Token；完整面板改为中文导航与中文 Demo 文案。2.0.3 移除“完整面板”按钮的大面积蓝色 tint，改为中性 Liquid Glass 控件。2.0.4 将菜单展开面板改为更接近 Apple popover 的大连续圆角、系统材质与柔和描边，并取消刷新时自动弹出网页登录窗口。
+界面按 Apple's Liquid Glass Design 重新整理：macOS 26 及以上使用原生 Liquid Glass 效果，macOS 15 使用系统 Material 降级方案。按钮按压态只改变透明度和填充，不再使用放大缩放，避免点击整块面板被放大的问题。2.0.2 进一步移除“更新今日 Token”独立按钮，改由“刷新”同步刷新额度和今日 Token；完整面板改为中文导航与中文 Demo 文案。2.0.3 移除“完整面板”按钮的大面积蓝色 tint，改为中性 Liquid Glass 控件。2.0.4 将菜单展开面板改为更接近 Apple popover 的大连续圆角、系统材质与柔和描边，并取消刷新时自动弹出网页登录窗口。2.0.9 移除菜单栏展开面板背后的自定义半透明 Material 遮罩。2.0.10 将 MenuBarExtra 宿主 NSWindow 配置为透明、非 opaque、无系统窗口阴影，并清理 NSHostingView / contentView 背景；菜单根 View 只绘制一个与实际内容尺寸一致的圆角主面板，圆角外透明。2.0.11 在完整面板和设置页加入 1/5/10 分钟自动刷新频率，并将刷新调度收敛为单一可见配置。2.0.6 曾将设置页数据源区域改为电池充电绿；2.0.7 已取消该填充色，改为中性 Liquid Glass 操作按钮。
 
 ## 启动冒烟测试
 
 本地安装到 `/Applications/Codex Usage Monitor.app` 后启动成功，进程保持运行，没有立即崩溃。该测试验证的是本机可启动，不等同于跨 Mac 可分发签名验证。
 
-## 2.0.4 本机测试 DMG
+## 2.0.11 性能冒烟检查
 
-- 文件：`Codex-Usage-Monitor-2.0.4-local-test-apple-silicon.dmg`；
+从 `/Users/oo1/Documents/New project/Dist/Codex Usage Monitor.app` 启动 25 秒后采样：
+
+- `ps` 稳定态 CPU：0.0%；
+- RSS：约 121,680 KB；
+- `sample` 报告 Physical footprint：43.2 MB，峰值 44.0 MB；
+- 主线程处于 AppKit 事件循环等待，未发现持续忙等；
+- 菜单栏弹窗宿主窗口配置增加 windowNumber 缓存，避免 SwiftUI 更新时重复遍历 NSView 层级。
+
+## 2.0.11 本机测试 DMG
+
+- 文件：`Codex-Usage-Monitor-2.0.11-local-test-apple-silicon.dmg`；
 - 架构：`arm64`；
 - 最低 macOS：15.0；
 - 签名：ad-hoc，仅供本机开发测试，不能作为跨 Mac 分享版；
 - Apple 公证票据：无；
-- SHA-256：`130f4720c0758b5420eecd3fe4ebe4ef1563633f1fb581b2fc4f122c94ade8b8`。
+- SHA-256：`3c49f3fd255bf4f7102c78afd81e3b8876da457f2153ed98127e3dc0116cf3ee`。
 
 ## 发布阻塞项
 
@@ -57,4 +67,4 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test
 
 ## GitHub 状态
 
-本轮没有提交、推送、创建 Release 或更新 GitHub。用户确认前，本地改动保留在工作区。
+2.0.11 经用户明确确认后提交并同步 GitHub。

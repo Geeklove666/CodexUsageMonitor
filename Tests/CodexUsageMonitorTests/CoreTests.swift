@@ -94,6 +94,17 @@ final class MenuBarQuotaLevelTests: XCTestCase {
     }
 }
 
+final class AutoRefreshFrequencyTests: XCTestCase {
+    func testOnlySupportedRefreshIntervalsAreAccepted() {
+        XCTAssertEqual(AutoRefreshFrequency.allCases.map(\.rawValue), [60, 300, 600])
+        XCTAssertEqual(AutoRefreshFrequency.sanitizedSeconds(60), 60)
+        XCTAssertEqual(AutoRefreshFrequency.sanitizedSeconds(300), 300)
+        XCTAssertEqual(AutoRefreshFrequency.sanitizedSeconds(600), 600)
+        XCTAssertEqual(AutoRefreshFrequency.sanitizedSeconds(30), AutoRefreshFrequency.defaultValue.rawValue)
+        XCTAssertEqual(AutoRefreshFrequency.sanitizedSeconds(1_800), AutoRefreshFrequency.defaultValue.rawValue)
+    }
+}
+
 final class ParserTests: XCTestCase {
     let parser = OfficialPageDOMParser()
     func testVisibleOfficialPageText() throws {
@@ -662,6 +673,8 @@ final class NativeUISnapshotSmokeTests: XCTestCase {
         for plan in ["$0/月", "$8/月", "$20/月", "$100/月", "$200/月"] {
             XCTAssertTrue(source.contains(plan), "Missing US pricing baseline: \(plan)")
         }
+        XCTAssertTrue(source.contains("自动刷新频率"))
+        XCTAssertTrue(source.contains("AutoRefreshFrequency.allCases"))
         XCTAssertTrue(source.contains("Demo"))
         XCTAssertFalse(source.contains(".glassEffect("), "Dashboard content must not apply glassEffect directly.")
     }

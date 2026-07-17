@@ -7,7 +7,7 @@ struct SettingsView: View {
     @Environment(WebViewSession.self) private var session
     @Environment(\.openWindow) private var openWindow
     @AppStorage("showDockIcon") private var showDockIcon = false
-    @AppStorage("smartRefresh") private var smartRefresh = true
+    @AppStorage(UsageMonitoringService.refreshIntervalPreferenceKey) private var autoRefreshSeconds = AutoRefreshFrequency.defaultValue.rawValue
     @AppStorage("notificationsEnabled") private var notifications = false
     @AppStorage("retentionDays") private var retentionDays = 30
     @AppStorage("debugMode") private var debugMode = false
@@ -120,8 +120,15 @@ struct SettingsView: View {
                     Toggle("", isOn: $showDockIcon).labelsHidden()
                 }
                 rowDivider
-                SettingsRow(symbol: "clock.arrow.circlepath", color: AppleUI.purple, title: "智能刷新", detail: "根据活跃状态调整刷新频率") {
-                    Toggle("", isOn: $smartRefresh).labelsHidden()
+                SettingsRow(symbol: "clock.arrow.circlepath", color: AppleUI.purple,
+                            title: "自动刷新频率", detail: selectedRefreshFrequency.detail) {
+                    Picker("自动刷新频率", selection: refreshFrequencyBinding) {
+                        ForEach(AutoRefreshFrequency.allCases) { frequency in
+                            Text(frequency.label).tag(frequency.rawValue)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 110)
                 }
                 rowDivider
                 SettingsRow(symbol: "power.circle.fill", color: AppleUI.success,
@@ -241,7 +248,7 @@ struct SettingsView: View {
                             session.openUsagePage()
                             NSApp.activate()
                         }
-                        .buttonStyle(GlassButtonStyle(tint: AppleUI.accent))
+                        .buttonStyle(GlassButtonStyle())
                     }
 
                     Divider().opacity(0.28).padding(.vertical, 13)
@@ -323,6 +330,19 @@ struct SettingsView: View {
         launchAtLoginState = LaunchAtLoginService().state
     }
 
+    private var selectedRefreshFrequency: AutoRefreshFrequency {
+        AutoRefreshFrequency(rawValue: autoRefreshSeconds) ?? .defaultValue
+    }
+
+    private var refreshFrequencyBinding: Binding<Int> {
+        Binding {
+            AutoRefreshFrequency.sanitizedSeconds(autoRefreshSeconds)
+        } set: { newValue in
+            autoRefreshSeconds = AutoRefreshFrequency.sanitizedSeconds(newValue)
+            monitor.restartRefreshLoop()
+        }
+    }
+
     private var realtimeTokenAuthorizationBinding: Binding<Bool> {
         Binding {
             localRealtimeTokenUsage
@@ -375,7 +395,7 @@ struct SettingsView: View {
             Label("打开 Codex 登录", systemImage: "person.crop.circle")
                 .frame(maxWidth: .infinity)
         }
-        .buttonStyle(GlassButtonStyle(tint: AppleUI.accent))
+        .buttonStyle(GlassButtonStyle())
     }
 
     private func refreshLocalCodexStatus() async {

@@ -35,10 +35,11 @@ struct CodexUsageMonitorApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         UserDefaults.standard.register(defaults: [
-            "smartRefresh": true, "notificationsEnabled": false,
+            UsageMonitoringService.refreshIntervalPreferenceKey: AutoRefreshFrequency.defaultValue.rawValue,
+            "notificationsEnabled": false,
             "notifyEvery20": true, "notifyReset": true,
             LocalRealtimeTokenAuthorization.preferenceKey: false,
-            "activeRefreshSeconds": 60, "idleRefreshSeconds": 300, "retentionDays": 30
+            "retentionDays": 30
         ])
         NSApp.setActivationPolicy(UserDefaults.standard.bool(forKey: "showDockIcon") ? .regular : .accessory)
         Task { @MainActor in

@@ -8,6 +8,7 @@ struct DashboardView: View {
     @State private var selection: DashboardSection = .overview
     @State private var scenario: DemoQuotaScenario = .cached
     @State private var chartRange: DemoHistoryRange = .week
+    @AppStorage(UsageMonitoringService.refreshIntervalPreferenceKey) private var autoRefreshSeconds = AutoRefreshFrequency.defaultValue.rawValue
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
     @Environment(WebViewSession.self) private var webSession
@@ -195,6 +196,22 @@ struct DashboardView: View {
         VStack(alignment: .leading, spacing: 16) {
             AppleCard {
                 VStack(alignment: .leading, spacing: 12) {
+                    SectionHeading(title: "刷新", subtitle: "真实数据源按所选频率自动刷新；手动刷新仍会立即执行。")
+                    SettingsRow(symbol: "clock.arrow.circlepath", color: AppleUI.purple,
+                                title: "自动刷新频率", detail: selectedRefreshFrequency.detail) {
+                        Picker("自动刷新频率", selection: refreshFrequencyBinding) {
+                            ForEach(AutoRefreshFrequency.allCases) { frequency in
+                                Text(frequency.label).tag(frequency.rawValue)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 120)
+                        .accessibilityLabel("自动刷新频率")
+                    }
+                }
+            }
+            AppleCard {
+                VStack(alignment: .leading, spacing: 12) {
                     SectionHeading(title: "显示", subtitle: "使用带可访问性标签的原生控件。")
                     Toggle("在菜单栏显示状态", isOn: .constant(true))
                     Toggle("减少非必要动画", isOn: .constant(false))
@@ -217,6 +234,19 @@ struct DashboardView: View {
 
     private func refreshFromDashboard() {
         Task { await monitor.refresh() }
+    }
+
+    private var selectedRefreshFrequency: AutoRefreshFrequency {
+        AutoRefreshFrequency(rawValue: autoRefreshSeconds) ?? .defaultValue
+    }
+
+    private var refreshFrequencyBinding: Binding<Int> {
+        Binding {
+            AutoRefreshFrequency.sanitizedSeconds(autoRefreshSeconds)
+        } set: { newValue in
+            autoRefreshSeconds = AutoRefreshFrequency.sanitizedSeconds(newValue)
+            monitor.restartRefreshLoop()
+        }
     }
 }
 

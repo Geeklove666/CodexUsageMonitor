@@ -96,12 +96,10 @@ struct MenuPanelView: View {
         .padding(12)
         .frame(width: 360)
         .fixedSize(horizontal: false, vertical: true)
-        .background { MenuPanelChrome().allowsHitTesting(false) }
-        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.18), lineWidth: 0.75)
-        }
+        .background { MenuPanelRootBackground().allowsHitTesting(false) }
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .background { MenuPanelHostWindowConfigurator().frame(width: 0, height: 0) }
+        .containerBackground(.clear, for: .window)
         .task { monitor.start() }
         .alert("浏览器与应用登录相互独立", isPresented: $showsBrowserChoice) {
             Button("应用内登录") {
@@ -268,22 +266,77 @@ struct MenuPanelView: View {
     }
 }
 
-private struct MenuPanelChrome: View {
+private struct MenuPanelRootBackground: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 28, style: .continuous)
-            .fill(reduceTransparency
-                ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor))
-                : AnyShapeStyle(.regularMaterial))
-            .overlay(alignment: .top) {
-                RoundedRectangle(cornerRadius: 28, style: .continuous)
-                    .fill(Color.white.opacity(reduceTransparency ? 0 : 0.08))
-                    .frame(height: 90)
-                    .blur(radius: 24)
-                    .offset(y: -36)
-                    .allowsHitTesting(false)
+        let shape = RoundedRectangle(cornerRadius: 24, style: .continuous)
+        shape
+            .fill(Color(nsColor: reduceTransparency ? .windowBackgroundColor : .controlBackgroundColor))
+            .overlay {
+                shape.strokeBorder(
+                    Color(nsColor: .separatorColor).opacity(contrast == .increased ? 0.45 : 0.20),
+                    lineWidth: contrast == .increased ? 1 : 0.7
+                )
             }
+    }
+}
+
+private struct MenuPanelHostWindowConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        configure(view, attemptsRemaining: 8)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        configure(nsView, attemptsRemaining: 4)
+    }
+
+    private func configure(_ view: NSView, attemptsRemaining: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(30)) {
+            guard let window = view.window else {
+                if attemptsRemaining > 0 { configure(view, attemptsRemaining: attemptsRemaining - 1) }
+                return
+            }
+            guard MenuPanelWindowConfigurationRegistry.markIfNeeded(windowNumber: window.windowNumber) else {
+                return
+            }
+
+            window.isOpaque = false
+            window.backgroundColor = .clear
+            window.hasShadow = false
+            window.titleVisibility = .hidden
+            window.titlebarAppearsTransparent = true
+
+            clearBackgrounds(from: window.contentView)
+            clearBackgrounds(from: window.contentView?.superview)
+        }
+    }
+
+    private func clearBackgrounds(from view: NSView?) {
+        guard let view else { return }
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor.clear.cgColor
+        if let visualEffect = view as? NSVisualEffectView {
+            visualEffect.blendingMode = .withinWindow
+            visualEffect.state = .inactive
+            visualEffect.isHidden = true
+        }
+        for subview in view.subviews {
+            clearBackgrounds(from: subview)
+        }
+    }
+}
+
+@MainActor
+private enum MenuPanelWindowConfigurationRegistry {
+    private static var configuredWindowNumbers = Set<Int>()
+
+    static func markIfNeeded(windowNumber: Int) -> Bool {
+        guard windowNumber > 0 else { return true }
+        return configuredWindowNumbers.insert(windowNumber).inserted
     }
 }
 

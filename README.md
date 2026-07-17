@@ -11,7 +11,7 @@
 > [!IMPORTANT]
 > 本项目是独立开发的非官方工具，与 OpenAI 无隶属、授权或背书关系。Codex、ChatGPT 及 OpenAI 是其各自权利人的商标。
 
-当前本地版本：**2.0.4（Build 36）**<br>
+当前本地版本：**2.0.11（Build 43）**<br>
 系统要求：**macOS 15 Sequoia 至 macOS 27 测试版**<br>
 架构：**Apple Silicon（arm64）**
 
@@ -101,7 +101,7 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test
 1. 启动应用并点击菜单栏中的 `Codex` 状态项；
 2. 如需使用本机 Codex 额度，选择“启用本机 Codex”，并确保 `codex login status` 显示已登录；
 3. 也可以选择“OpenAI 登录”，在隔离的官方页面中完成回退数据源登录；
-4. 返回菜单栏点击“刷新”；若会话未就绪，应用会再次打开登录窗口；
+4. 返回菜单栏点击“刷新”；刷新不会自动弹出网页登录，网页登录只在你手动点击“OpenAI 登录”时打开；
 5. 在设置中按需开启通知、登录启动、实时今日 Token 和历史保留周期；
 6. 完整 Dashboard 使用 Overview、Usage History、Alerts、Data Source、Settings 五个页面；当前第一版界面使用明确标记的 Demo 数据展示各类状态。
 
@@ -119,7 +119,7 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer swift test
 
 ## 刷新和存储
 
-- 检测到 Codex 进程时默认约 60 秒刷新，否则约 5 分钟；
+- 自动刷新频率可在完整面板或设置页选择：1 分钟、5 分钟、10 分钟；默认 5 分钟；
 - 额度查询和本机实时 Token 扫描并发执行，Analytics 在额度显示后于后台补充；
 - 未登录时刷新会展示登录窗口；已登录时额度请求直接使用 `no-store` 读取最新值；
 - 倒计时只在本地更新，不触发网络请求；
@@ -159,13 +159,14 @@ App / DependencyContainer
 swift test
 ```
 
-当前包含 **59 项 XCTest**，覆盖：
+当前包含 **60 项 XCTest**，覆盖：
 
 - 百分比、重置时间和格式化边界；
 - 官方页面、Usage 响应与 Analytics 解析；
 - 本机 Codex app-server 额度解析；
 - 本机实时 Token 只读取 `token_count` 事件；
 - 数据源优先级、超时、缓存和估算降级；
+- 自动刷新频率只接受 1/5/10 分钟三个有效值；
 - SwiftData 持久化和恢复；
 - 脱敏规则与官方域名白名单；
 - 菜单面板、Dashboard 关键宽度及稳定按压布局。
