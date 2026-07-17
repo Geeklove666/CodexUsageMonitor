@@ -51,7 +51,8 @@ enum SubscriptionTierFormatter {
         case "free": return "$0 Free"
         case "go": return "$8 Go 订阅"
         case "plus": return "$20 Plus 订阅"
-        case "pro", "prolite", "pro 5x": return "$100 Pro 5x 订阅"
+        case "pro": return "$200 Pro 20x 订阅"
+        case "prolite", "pro 5x": return "$100 Pro 5x 订阅"
         case "pro 20x": return "$200 Pro 20x 订阅"
         default:
             if let multiplier = proMultiplier(in: normalized) {

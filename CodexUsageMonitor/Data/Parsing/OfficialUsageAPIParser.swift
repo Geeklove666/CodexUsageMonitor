@@ -86,7 +86,9 @@ struct OfficialUsageAPIParser: Sendable {
         switch value.lowercased() {
         case "free": "Free"
         case "plus": "Plus"
-        case "pro", "prolite": "Pro"
+        case "pro": "Pro 20x"
+        case "prolite", "pro_5x", "pro5x": "Pro 5x"
+        case "pro_20x", "pro20x": "Pro 20x"
         case "team", "business", "self_serve_business_usage_based": "Business"
         case "enterprise", "enterprise_cbp_automation", "enterprise_cbp_usage_based": "Enterprise"
         case "edu", "education", "edu_plus", "edu_pro": "Edu"

@@ -94,9 +94,14 @@ struct MenuPanelView: View {
             actions
         }
         .padding(12)
-        .background { AppBackground().allowsHitTesting(false) }
         .frame(width: 360)
         .fixedSize(horizontal: false, vertical: true)
+        .background { MenuPanelChrome().allowsHitTesting(false) }
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.18), lineWidth: 0.75)
+        }
         .task { monitor.start() }
         .alert("浏览器与应用登录相互独立", isPresented: $showsBrowserChoice) {
             Button("应用内登录") {
@@ -259,12 +264,26 @@ struct MenuPanelView: View {
     }
 
     private func requestRefresh() {
-        if !webSession.hasLoadedUsagePage {
-            openWindow(id: "login")
-            webSession.openUsagePage()
-            NSApp.activate()
-        }
         Task { await monitor.refresh() }
+    }
+}
+
+private struct MenuPanelChrome: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 28, style: .continuous)
+            .fill(reduceTransparency
+                ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor))
+                : AnyShapeStyle(.regularMaterial))
+            .overlay(alignment: .top) {
+                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .fill(Color.white.opacity(reduceTransparency ? 0 : 0.08))
+                    .frame(height: 90)
+                    .blur(radius: 24)
+                    .offset(y: -36)
+                    .allowsHitTesting(false)
+            }
     }
 }
 

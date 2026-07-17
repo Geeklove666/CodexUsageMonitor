@@ -216,11 +216,6 @@ struct DashboardView: View {
     }
 
     private func refreshFromDashboard() {
-        if !webSession.hasLoadedUsagePage {
-            openWindow(id: "login")
-            webSession.openUsagePage()
-            NSApp.activate()
-        }
         Task { await monitor.refresh() }
     }
 }

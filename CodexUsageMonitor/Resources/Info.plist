@@ -4,8 +4,8 @@
   <key>CFBundleName</key><string>Codex Usage Monitor</string>
   <key>CFBundleDisplayName</key><string>Codex Usage Monitor</string>
   <key>CFBundleIdentifier</key><string>local.codex-usage-monitor</string>
-  <key>CFBundleShortVersionString</key><string>2.0.3</string>
-  <key>CFBundleVersion</key><string>35</string>
+  <key>CFBundleShortVersionString</key><string>2.0.4</string>
+  <key>CFBundleVersion</key><string>36</string>
   <key>CFBundleExecutable</key><string>CodexUsageMonitor</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
