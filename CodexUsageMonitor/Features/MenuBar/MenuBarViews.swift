@@ -303,11 +303,56 @@ private struct MenuPanelRootBackground: View {
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 24, style: .continuous)
-        shape
-            .fill(Color(nsColor: reduceTransparency ? .windowBackgroundColor : .controlBackgroundColor))
+        ZStack {
+            if reduceTransparency {
+                shape.fill(Color(nsColor: .windowBackgroundColor))
+            } else {
+                shape.fill(.ultraThinMaterial)
+                shape.fill(
+                    LinearGradient(
+                        colors: [
+                            Color(nsColor: .systemOrange).opacity(0.18),
+                            Color(nsColor: .systemPink).opacity(0.16),
+                            Color(nsColor: .systemPurple).opacity(0.14),
+                            Color(nsColor: .systemBlue).opacity(0.12)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                shape.fill(Color(nsColor: .controlBackgroundColor).opacity(0.30))
+            }
+        }
+        .overlay(alignment: .topLeading) {
+            if !reduceTransparency {
+                Circle()
+                    .fill(Color.white.opacity(0.18))
+                    .blur(radius: 28)
+                    .frame(width: 160, height: 160)
+                    .offset(x: -42, y: -64)
+                    .clipShape(shape)
+            }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if !reduceTransparency {
+                Circle()
+                    .fill(Color(nsColor: .systemBlue).opacity(0.10))
+                    .blur(radius: 32)
+                    .frame(width: 180, height: 180)
+                    .offset(x: 62, y: 76)
+                    .clipShape(shape)
+            }
+        }
             .overlay {
                 shape.strokeBorder(
-                    Color(nsColor: .separatorColor).opacity(contrast == .increased ? 0.45 : 0.20),
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(reduceTransparency ? 0 : 0.30),
+                            Color(nsColor: .separatorColor).opacity(contrast == .increased ? 0.48 : 0.20)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
                     lineWidth: contrast == .increased ? 1 : 0.7
                 )
             }

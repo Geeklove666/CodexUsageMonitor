@@ -38,9 +38,12 @@ struct AppleCard<Content: View>: View {
         content
             .padding(padding)
             .background {
-                shape.fill(reduceTransparency
-                    ? AnyShapeStyle(Color(nsColor: .controlBackgroundColor))
-                    : AnyShapeStyle(Color(nsColor: .controlBackgroundColor)))
+                if reduceTransparency {
+                    shape.fill(Color(nsColor: .controlBackgroundColor))
+                } else {
+                    shape.fill(material)
+                    shape.fill(Color(nsColor: .controlBackgroundColor).opacity(0.50))
+                }
             }
             .overlay {
                 shape.strokeBorder(Color(nsColor: .separatorColor).opacity(contrast == .increased ? 0.55 : 0.28),
