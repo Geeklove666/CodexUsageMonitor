@@ -24,6 +24,21 @@ protocol RefreshCacheInvalidatingDataSource: Sendable {
     func invalidateRefreshCaches() async
 }
 
+protocol CodexUsageRepository: Sendable {
+    func fetchQuota(forceRefresh: Bool) async throws -> CodexUsageSnapshot
+    func fetchAnalytics(for snapshot: CodexUsageSnapshot, forceRefresh: Bool) async -> CodexUsageSnapshot
+    func currentDiagnostic() async -> DataSourceDiagnostic
+}
+
+protocol RealtimeTokenUsageReading: Sendable {
+    func currentAnalyticsSnapshot() async -> CodexAnalyticsSnapshot?
+}
+
+@MainActor
+protocol UsageHistoryWriting: AnyObject {
+    func saveIfNeeded(_ snapshot: CodexUsageSnapshot, processActive: Bool) throws -> Bool
+}
+
 protocol CodexUsageDOMParser: Sendable {
     var parserVersion: String { get }
     func parse(html: String) throws -> ParsedCodexUsage

@@ -54,7 +54,7 @@ struct CompactUsageSummary: View {
     let now: Date
 
     var body: some View {
-        AppleCard(padding: 12, cornerRadius: 16, shadowRadius: 12, shadowY: 3, material: nil) {
+        AppleCard(padding: 12, cornerRadius: 16, material: nil) {
             HStack(spacing: 12) {
                 UsageRing(
                     percentage: snapshot.primaryWindow?.remainingPercentage,
@@ -201,41 +201,27 @@ struct MonitoringStatusBar: View {
     }
 
     private var message: String {
-        switch status {
-        case .refreshing: return "正在读取 Codex 数据"
+        switch presentationState {
+        case .loading: return "正在读取 Codex 数据"
         case .live: return "数据正常 · \(RelativeFormatter.text(snapshot.fetchedAt))"
         case .cached: return "缓存数据 · \(RelativeFormatter.text(snapshot.fetchedAt))"
         case .estimated: return "本地估算 · \(RelativeFormatter.text(snapshot.fetchedAt))"
+        case .offline: return lastError ?? "当前网络不可用 · 保留旧数据"
         case .needsLogin: return lastError ?? "需要登录后读取额度"
-        case .degraded:
+        case .failed:
             if let lastError { return "刷新失败：\(lastError) · 保留旧数据" }
             return "刷新失败 · 保留 \(RelativeFormatter.text(snapshot.fetchedAt)) 的数据"
         case .unavailable: return lastError ?? "当前没有可用数据"
+        case .exhausted: return "主额度已耗尽 · 等待重置"
         }
     }
 
-    private var symbol: String {
-        switch status {
-        case .refreshing: return "arrow.triangle.2.circlepath"
-        case .live: return "checkmark.circle.fill"
-        case .cached: return "externaldrive.fill.badge.checkmark"
-        case .estimated: return "function"
-        case .needsLogin: return "person.crop.circle.badge.exclamationmark"
-        case .degraded, .unavailable: return "exclamationmark.triangle.fill"
-        }
-    }
+    private var symbol: String { presentationState.symbol }
 
-    private var color: Color {
-        switch status {
-        case .live: return AppleUI.success
-        case .cached, .estimated: return AppleUI.purple
-        case .refreshing: return AppleUI.accent
-        case .needsLogin, .degraded, .unavailable: return AppleUI.warning
-        }
-    }
+    private var color: Color { presentationState.color }
 
-    private var status: MonitoringStatus {
-        MonitoringStatus(snapshot: snapshot, lastError: lastError, isRefreshing: isRefreshing)
+    private var presentationState: UsagePresentationState {
+        UsagePresentationState(snapshot: snapshot, lastError: lastError, isRefreshing: isRefreshing)
     }
 }
 

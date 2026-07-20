@@ -4,7 +4,7 @@ enum LocalRealtimeTokenAuthorization {
     static let preferenceKey = "localRealtimeTokenUsageEnabled"
 }
 
-struct LocalRealtimeTokenUsageReader: Sendable {
+struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
     let sessionsRoot: URL
     private let cache: LocalRealtimeTokenScanCache
 
@@ -43,22 +43,29 @@ struct LocalRealtimeTokenUsageReader: Sendable {
 
     func analyticsSnapshot(now: Date = .now, authorizationGranted: Bool? = nil) async -> CodexAnalyticsSnapshot? {
         guard authorizationGranted ?? UserDefaults.standard.bool(forKey: LocalRealtimeTokenAuthorization.preferenceKey) else { return nil }
-        let startOfToday = Calendar.current.startOfDay(for: now)
-        guard let files = rolloutFiles(modifiedSince: startOfToday) else { return nil }
-        if let cached = await cache.value(day: startOfToday, files: files) { return cached }
+        let calendar = Calendar.current
+        let startOfToday = calendar.startOfDay(for: now)
+        guard let rangeStart = calendar.date(byAdding: .day, value: -6, to: startOfToday),
+              let files = rolloutFiles(modifiedSince: rangeStart) else { return nil }
+        if let cached = await cache.value(rangeStart: rangeStart, files: files) { return cached }
         let value = await Task.detached(priority: .utility) {
-            Self.snapshot(now: now, startOfToday: startOfToday, files: files)
+            Self.snapshot(now: now, rangeStart: rangeStart, calendar: calendar, files: files)
         }.value
-        await cache.store(value, day: startOfToday, files: files)
+        await cache.store(value, rangeStart: rangeStart, files: files)
         return value
     }
 
-    private static func snapshot(now: Date, startOfToday: Date, files: [RolloutFile]) -> CodexAnalyticsSnapshot? {
+    func currentAnalyticsSnapshot() async -> CodexAnalyticsSnapshot? {
+        await analyticsSnapshot(now: .now, authorizationGranted: nil)
+    }
+
+    private static func snapshot(now: Date, rangeStart: Date, calendar: Calendar,
+                                 files: [RolloutFile]) -> CodexAnalyticsSnapshot? {
         let decoder = JSONDecoder()
         let fractionalTimestamp = ISO8601DateFormatter()
         fractionalTimestamp.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let standardTimestamp = ISO8601DateFormatter()
-        var todayTokens: Int64 = 0
+        var tokensByDay: [Date: Int64] = [:]
         var observedEvents = 0
 
         for file in files {
@@ -71,10 +78,10 @@ struct LocalRealtimeTokenUsageReader: Sendable {
                         ?? standardTimestamp.date(from: event.timestamp) else { return }
                 let current = info.totalTokenUsage.totalTokens
                 defer { previousTotal = current }
-                guard timestamp >= startOfToday, timestamp <= now.addingTimeInterval(60) else { return }
+                guard timestamp >= rangeStart, timestamp <= now.addingTimeInterval(60) else { return }
                 let increment = previousTotal.map { current >= $0 ? current - $0 : current } ?? current
                 guard increment >= 0 else { return }
-                todayTokens += increment
+                tokensByDay[calendar.startOfDay(for: timestamp), default: 0] += increment
                 observedEvents += 1
             }
         }
@@ -82,21 +89,23 @@ struct LocalRealtimeTokenUsageReader: Sendable {
         guard observedEvents > 0 else { return nil }
         var value = CodexAnalyticsSnapshot(
             fetchedAt: now,
-            sourceDisplayName: "本机 Codex 实时用量",
-            rangeStart: startOfToday,
-            rangeEnd: startOfToday,
+            sourceDisplayName: "本机 Codex 本地用量",
+            rangeStart: rangeStart,
+            rangeEnd: calendar.startOfDay(for: now),
             groupBy: "day",
-            dailyActivity: [CodexDailyActivity(
-                date: startOfToday, users: 0, threads: 0, turns: 0, credits: 0,
-                uncachedInputTokens: 0, cachedInputTokens: 0, outputTokens: 0,
-                totalTokens: todayTokens, clients: [], models: []
-            )],
+            dailyActivity: tokensByDay.keys.sorted().map { date in
+                CodexDailyActivity(
+                    date: date, users: 0, threads: 0, turns: 0, credits: 0,
+                    uncachedInputTokens: 0, cachedInputTokens: 0, outputTokens: 0,
+                    totalTokens: tokensByDay[date] ?? 0, clients: [], models: []
+                )
+            },
             dailyProductUsage: [], topSkills: [], topPlugins: [], creditEventCount: nil,
             availableSections: [.tokenUsage], lifetimeTokens: nil, peakDailyTokens: nil,
             currentStreakDays: nil, longestStreakDays: nil, longestRunningTurnSeconds: nil
         )
-        value.sectionSources[.tokenUsage] = "本机 Codex token_count 事件（实时）"
-        value.warnings = ["今日 Token 仅统计这台 Mac 上 Codex 已落盘的 token_count 事件，不包含其他设备或尚未落盘的活动。"]
+        value.sectionSources[.tokenUsage] = "本机 Codex token_count 事件（最近 7 天）"
+        value.warnings = ["每日 Token 仅统计这台 Mac 上 Codex 已落盘的 token_count 事件，不包含其他设备或尚未落盘的活动。"]
         return value
     }
 
@@ -135,19 +144,19 @@ struct LocalRealtimeTokenUsageReader: Sendable {
 }
 
 private actor LocalRealtimeTokenScanCache {
-    private var day: Date?
+    private var rangeStart: Date?
     private var files: [LocalRealtimeTokenUsageReader.RolloutFile] = []
     private var snapshot: CodexAnalyticsSnapshot?
     private var hasValue = false
 
-    func value(day: Date, files: [LocalRealtimeTokenUsageReader.RolloutFile]) -> CodexAnalyticsSnapshot? {
-        guard hasValue, self.day == day, self.files == files else { return nil }
+    func value(rangeStart: Date, files: [LocalRealtimeTokenUsageReader.RolloutFile]) -> CodexAnalyticsSnapshot? {
+        guard hasValue, self.rangeStart == rangeStart, self.files == files else { return nil }
         return snapshot
     }
 
-    func store(_ snapshot: CodexAnalyticsSnapshot?, day: Date,
+    func store(_ snapshot: CodexAnalyticsSnapshot?, rangeStart: Date,
                files: [LocalRealtimeTokenUsageReader.RolloutFile]) {
-        self.day = day
+        self.rangeStart = rangeStart
         self.files = files
         self.snapshot = snapshot
         hasValue = true

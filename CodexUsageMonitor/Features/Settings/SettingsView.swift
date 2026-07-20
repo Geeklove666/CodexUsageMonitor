@@ -29,9 +29,9 @@ struct SettingsView: View {
         ZStack {
             AppBackground()
             VStack(spacing: 0) {
-                settingsNavigation
+                SettingsNavigationBar(selection: $selection)
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: AppleUI.spacingL) {
                         SectionHeading(title: selection.title, subtitle: selection.subtitle)
                         Group {
                             switch selection {
@@ -42,7 +42,7 @@ struct SettingsView: View {
                             }
                         }
                     }
-                    .padding(24)
+                    .padding(AppleUI.contentPadding)
                     .frame(maxWidth: 720)
                     .frame(maxWidth: .infinity)
                 }
@@ -56,7 +56,7 @@ struct SettingsView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("应用只扫描 ~/.codex/sessions 中结构化的 token_count 事件及时间戳，用于计算这台 Mac 今天的 Token 消耗；不会提取或保存提示词、代码、工具输出、文件路径或消息正文。可随时在此撤销授权。")
+            Text("应用只扫描 ~/.codex/sessions 中最近 7 天结构化的 token_count 事件及时间戳，用于计算这台 Mac 每天的 Token 消耗；不会提取或保存提示词、代码、工具输出、文件路径或消息正文。可随时在此撤销授权。")
         }
         .alert("允许使用本机 Codex 登录读取额度？", isPresented: $showsLocalCodexConsent) {
             Button("授权并刷新") {
@@ -91,26 +91,6 @@ struct SettingsView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             refreshLaunchAtLoginState()
         }
-    }
-
-    private var settingsNavigation: some View {
-        HStack(spacing: 6) {
-            ForEach(SettingsSection.allCases) { section in
-                Button { selection = section } label: {
-                    Label(section.title, systemImage: section.symbol)
-                        .font(.subheadline.weight(selection == section ? .semibold : .regular))
-                        .padding(.horizontal, 13)
-                        .frame(height: 34)
-                        .foregroundStyle(selection == section ? Color.primary : Color.secondary)
-                        .background(selection == section ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                }
-                .buttonStyle(.plain)
-            }
-            Spacer()
-        }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 10)
-        .liquidGlassSurface(cornerRadius: 18)
     }
 
     private var generalSettings: some View {
@@ -261,7 +241,7 @@ struct SettingsView: View {
                     Divider().opacity(0.28).padding(.vertical, 13)
 
                     SettingsRow(symbol: "bolt.horizontal.circle.fill", color: AppleUI.accent,
-                                title: "本机实时今日 Token", detail: "仅汇总 Codex token_count 事件；不读取会话正文") {
+                                title: "本机每日 Token", detail: "汇总最近 7 天 Codex token_count 事件；不读取会话正文") {
                         Toggle("", isOn: realtimeTokenAuthorizationBinding).labelsHidden()
                             .help("授权或撤销本机实时 Token 统计")
                     }
@@ -461,12 +441,4 @@ struct SettingsView: View {
             UserDefaults.standard.removeObject(forKey: key)
         }
     }
-}
-
-enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, dataSources, notifications, privacy
-    var id: Self { self }
-    var title: String { switch self { case .general: "常规"; case .dataSources: "数据源"; case .notifications: "通知"; case .privacy: "隐私" } }
-    var subtitle: String { switch self { case .general: "调整应用的基础行为"; case .dataSources: "选择额度读取方式并管理授权"; case .notifications: "只在重要状态变化时打扰你"; case .privacy: "管理保存在这台 Mac 上的数据" } }
-    var symbol: String { switch self { case .general: "gearshape.fill"; case .dataSources: "externaldrive.connected.to.line.below.fill"; case .notifications: "bell.fill"; case .privacy: "hand.raised.fill" } }
 }

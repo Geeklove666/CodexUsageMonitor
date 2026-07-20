@@ -7,6 +7,7 @@ final class DependencyContainer {
     let repository: DefaultCodexUsageRepository
     let monitoring: UsageMonitoringService
     let menuBarController: MenuBarController
+    let lifecycleCoordinator: AppLifecycleCoordinator
 
     init() {
         var persistenceWarnings: [String] = []
@@ -41,11 +42,15 @@ final class DependencyContainer {
         let initialSnapshot = restored.last.flatMap {
             try? CachedSnapshotDataSource.cachedSnapshot(from: $0, maximumAge: 86_400)
         } ?? .unavailable
+        let snapshotPipeline = UsageSnapshotPipeline(history: history)
         monitoring = UsageMonitoringService(
-            repository: repository, history: history,
-            realtimeTokenReader: realtimeTokenReader, initialSnapshot: initialSnapshot
+            repository: repository,
+            realtimeTokenReader: realtimeTokenReader,
+            snapshotPipeline: snapshotPipeline,
+            initialSnapshot: initialSnapshot
         )
         menuBarController = MenuBarController(monitor: monitoring, history: history, webSession: webSession)
+        lifecycleCoordinator = AppLifecycleCoordinator(monitor: monitoring)
         monitoring.persistenceWarning = persistenceWarnings.isEmpty ? nil : persistenceWarnings.joined(separator: "\n")
         webSession.onPageReady = { [weak monitoring] in
             Task { @MainActor in
@@ -54,8 +59,6 @@ final class DependencyContainer {
                 await monitoring?.refresh()
             }
         }
-        // Keep the isolated first-party web session warm as a fallback and login surface.
-        webSession.openUsagePage()
         monitoring.start()
     }
 }

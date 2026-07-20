@@ -7,26 +7,29 @@ final class UsageMonitoringService {
     static let refreshIntervalPreferenceKey = "autoRefreshSeconds"
 
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "local.codex-usage-monitor", category: "monitoring")
-    private let repository: DefaultCodexUsageRepository
-    private let history: UsageHistoryStore
-    private let realtimeTokenReader: LocalRealtimeTokenUsageReader
-    private let processMonitor = CodexProcessMonitor()
+    private let repository: any CodexUsageRepository
+    private let realtimeTokenReader: any RealtimeTokenUsageReading
+    private let snapshotPipeline: UsageSnapshotPipeline
+    private let refreshPolicy = RefreshPolicy()
     private let networkMonitor = NetworkMonitor()
-    private let notificationService = NotificationService()
-    private let resetDetector = ResetDetectionService()
     private var loopTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
     private var activeRefreshForceRefresh = false
     private var refreshGeneration: UInt64 = 0
     private var analyticsTask: Task<Void, Never>?
     private var resetBoundaryTask: Task<Void, Never>?
+    private var networkRestoreTask: Task<Void, Never>?
     private var failures = 0
     private var lastMenuOpenAt: Date?
+    private var automaticRefreshSuspended = false
 
-    var snapshot = CodexUsageSnapshot.unavailable
+    @ObservationIgnored var displayStateDidChange: (() -> Void)?
+    var snapshot = CodexUsageSnapshot.unavailable {
+        didSet { if oldValue != snapshot { displayStateDidChange?() } }
+    }
     var isRefreshing = false
     var lastError: String?
-    var now = Date.now
+    @ObservationIgnored var now = Date.now
     var historyRevision = 0
     var diagnostic = DataSourceDiagnostic()
     var persistenceWarning: String?
@@ -34,12 +37,17 @@ final class UsageMonitoringService {
         MonitoringStatus(snapshot: snapshot, lastError: lastError, isRefreshing: isRefreshing)
     }
 
-    init(repository: DefaultCodexUsageRepository, history: UsageHistoryStore,
-         realtimeTokenReader: LocalRealtimeTokenUsageReader = LocalRealtimeTokenUsageReader(),
+    init(repository: any CodexUsageRepository,
+         realtimeTokenReader: any RealtimeTokenUsageReading,
+         snapshotPipeline: UsageSnapshotPipeline,
          initialSnapshot: CodexUsageSnapshot = .unavailable) {
-        self.repository = repository; self.history = history
-        self.realtimeTokenReader = realtimeTokenReader; snapshot = initialSnapshot
-        networkMonitor.onRestored = { [weak self] in Task { @MainActor in await self?.refresh(reason: "网络恢复", forceRefresh: false) } }
+        self.repository = repository
+        self.realtimeTokenReader = realtimeTokenReader
+        self.snapshotPipeline = snapshotPipeline
+        snapshot = initialSnapshot
+        networkMonitor.onRestored = { [weak self] in
+            Task { @MainActor in await self?.refreshAfterNetworkRestore() }
+        }
     }
 
     func start() {
@@ -50,6 +58,7 @@ final class UsageMonitoringService {
     func restartRefreshLoop() {
         loopTask?.cancel()
         loopTask = nil
+        guard !automaticRefreshSuspended else { return }
         startLoop(refreshImmediately: false)
     }
 
@@ -62,10 +71,22 @@ final class UsageMonitoringService {
                 let defaults = UserDefaults.standard
                 let configured = defaults.object(forKey: Self.refreshIntervalPreferenceKey) as? Int
                     ?? AutoRefreshFrequency.defaultValue.rawValue
-                let base = refreshDelay(configuredSeconds: configured)
-                let backoff = [0.0, 60, 120, 300, 600, 1800][min(self.failures, 5)]
-                let delay = max(base, backoff) * Double.random(in: 0.95...1.05)
-                try? await Task.sleep(for: .seconds(delay))
+                let process = ProcessInfo.processInfo
+                let delay = refreshPolicy.automaticDelay(
+                    configuredSeconds: configured,
+                    failureCount: self.failures,
+                    lastMenuOpenAt: self.lastMenuOpenAt,
+                    now: self.now,
+                    isLowPowerModeEnabled: process.isLowPowerModeEnabled,
+                    hasThermalPressure: process.thermalState == .serious || process.thermalState == .critical,
+                    jitterFactor: Double.random(in: 0.95...1.05)
+                )
+                do {
+                    try await Task.sleep(for: .seconds(delay))
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
                 await self.refresh(reason: "自动刷新", forceRefresh: false)
             }
         }
@@ -73,11 +94,46 @@ final class UsageMonitoringService {
 
     func noteMenuOpened() {
         lastMenuOpenAt = .now
+        now = .now
+    }
+
+    func updateClock() {
+        let current = Date.now
+        guard current.timeIntervalSince(now) >= 30 else { return }
+        now = current
+        displayStateDidChange?()
+    }
+
+    func suspendAutomaticRefresh() {
+        automaticRefreshSuspended = true
+        loopTask?.cancel()
+        resetBoundaryTask?.cancel()
+        networkRestoreTask?.cancel()
+        loopTask = nil
+        resetBoundaryTask = nil
+        networkRestoreTask = nil
+    }
+
+    func resumeAfterWake() {
+        automaticRefreshSuspended = false
+        now = .now
+        displayStateDidChange?()
+        guard loopTask == nil else { return }
+        startLoop(refreshImmediately: false)
+        Task { [weak self] in
+            await self?.refresh(reason: "系统唤醒", forceRefresh: false)
+        }
     }
 
     func refreshIfStaleForMenuOpen(maxAge: TimeInterval = 120) async {
         noteMenuOpened()
-        if shouldRefreshForMenuOpen(maxAge: maxAge) {
+        if refreshPolicy.shouldRefreshOnMenuOpen(
+            snapshot: snapshot,
+            lastError: lastError,
+            isRefreshing: isRefreshing,
+            maxAge: maxAge,
+            now: .now
+        ) {
             await refresh(reason: "菜单打开", forceRefresh: false)
         }
     }
@@ -102,7 +158,7 @@ final class UsageMonitoringService {
         refreshTask = Task { [weak self] in
             guard let self else { return }
             let previous = self.snapshot
-            async let realtimeValue = self.realtimeTokenReader.analyticsSnapshot()
+            async let realtimeValue = self.realtimeTokenReader.currentAnalyticsSnapshot()
             do {
                 var quota = try await self.repository.fetchQuota(forceRefresh: forceRefresh)
                 if let realtime = await realtimeValue { quota = quota.mergingAnalytics(realtime) }
@@ -118,7 +174,7 @@ final class UsageMonitoringService {
                     self.failures = 0
                     self.logger.info("Quota refresh succeeded via \(quota.sourceKind.rawValue, privacy: .public)")
                 }
-                await self.persistAndNotify(previous: previous, current: quota)
+                self.applyPipelineResult(await self.snapshotPipeline.process(previous: previous, current: quota))
                 self.scheduleResetBoundaryRefresh(for: quota)
                 self.startAnalyticsEnrichment(for: quota, generation: generation)
             } catch {
@@ -147,7 +203,7 @@ final class UsageMonitoringService {
     private func startAnalyticsEnrichment(for quota: CodexUsageSnapshot, generation: UInt64) {
         analyticsTask = Task { [weak self] in
             guard let self else { return }
-            let enriched = await self.repository.fetchAnalytics(for: quota)
+            let enriched = await self.repository.fetchAnalytics(for: quota, forceRefresh: false)
             guard !Task.isCancelled,
                   self.refreshGeneration == generation,
                   self.snapshot.id == quota.id
@@ -159,14 +215,10 @@ final class UsageMonitoringService {
                 self.snapshot = self.snapshot.mergingAnalytics(analytics)
             }
             self.logger.info("Analytics enrichment finished")
-            do {
-                if try self.history.saveIfNeeded(self.snapshot, processActive: self.processMonitor.isActive()) {
-                    self.historyRevision += 1
-                }
-            } catch {
-                self.persistenceWarning = "历史保存失败：\(SensitiveDataRedactor().redact(error.localizedDescription))"
-            }
+            self.applyPipelineResult(self.snapshotPipeline.persistAnalytics(self.snapshot))
+            let refreshReason = self.diagnostic.lastRefreshReason
             self.diagnostic = await self.repository.currentDiagnostic()
+            self.diagnostic.lastRefreshReason = refreshReason
         }
     }
 
@@ -189,43 +241,30 @@ final class UsageMonitoringService {
         }
     }
 
-    private func persistAndNotify(previous: CodexUsageSnapshot, current: CodexUsageSnapshot) async {
-        let reset = resetDetector.isReset(old: previous, new: current)
-        do {
-            if try history.saveIfNeeded(current, processActive: processMonitor.isActive()) {
-                historyRevision += 1
+    private func applyPipelineResult(_ result: UsageSnapshotPipelineResult) {
+        if result.historyChanged { historyRevision += 1 }
+        if let warning = result.persistenceWarning { persistenceWarning = warning }
+    }
+
+    private func refreshAfterNetworkRestore() async {
+        guard !automaticRefreshSuspended else { return }
+        networkRestoreTask?.cancel()
+        networkRestoreTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(2))
+            } catch {
+                return
             }
-        } catch {
-            persistenceWarning = "历史保存失败：\(SensitiveDataRedactor().redact(error.localizedDescription))"
+            guard !Task.isCancelled, let self, !self.automaticRefreshSuspended else { return }
+            await self.refresh(reason: "网络恢复", forceRefresh: false)
+            self.networkRestoreTask = nil
         }
-        await notificationService.evaluate(previous: previous, current: current, reset: reset)
+        await networkRestoreTask?.value
     }
 
     func cancel() {
-        loopTask?.cancel(); refreshTask?.cancel(); analyticsTask?.cancel(); resetBoundaryTask?.cancel()
-        loopTask = nil; refreshTask = nil; analyticsTask = nil; resetBoundaryTask = nil
+        loopTask?.cancel(); refreshTask?.cancel(); analyticsTask?.cancel(); resetBoundaryTask?.cancel(); networkRestoreTask?.cancel()
+        loopTask = nil; refreshTask = nil; analyticsTask = nil; resetBoundaryTask = nil; networkRestoreTask = nil
     }
 
-    private func shouldRefreshForMenuOpen(maxAge: TimeInterval) -> Bool {
-        if isRefreshing { return false }
-        if snapshot.sourceKind == .unavailable { return true }
-        if lastError != nil { return true }
-        if snapshot.isCached || snapshot.isEstimated { return true }
-        return Date.now.timeIntervalSince(snapshot.fetchedAt) > maxAge
-    }
-
-    private func refreshDelay(configuredSeconds: Int) -> Double {
-        guard AutoRefreshFrequency(rawValue: configuredSeconds) == .adaptive else {
-            return Double(AutoRefreshFrequency.sanitizedSeconds(configuredSeconds))
-        }
-        let process = ProcessInfo.processInfo
-        if process.isLowPowerModeEnabled || process.thermalState == .serious || process.thermalState == .critical {
-            return Double(AutoRefreshFrequency.tenMinutes.rawValue)
-        }
-        guard let lastMenuOpenAt else { return Double(AutoRefreshFrequency.tenMinutes.rawValue) }
-        let age = Date.now.timeIntervalSince(lastMenuOpenAt)
-        if age <= 5 * 60 { return Double(AutoRefreshFrequency.oneMinute.rawValue) }
-        if age <= 60 * 60 { return Double(AutoRefreshFrequency.fiveMinutes.rawValue) }
-        return Double(AutoRefreshFrequency.tenMinutes.rawValue)
-    }
 }

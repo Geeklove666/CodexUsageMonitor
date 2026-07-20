@@ -20,11 +20,13 @@ actor NotificationService {
     private let defaults = UserDefaults.standard
 
     func requestAuthorization() async throws -> Bool {
-        try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
+        guard Self.canAccessSystemNotificationCenter else { return false }
+        return try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
     }
 
     func authorizationState() async -> NotificationAuthorizationState {
-        await withCheckedContinuation { continuation in
+        guard Self.canAccessSystemNotificationCenter else { return .unknown }
+        return await withCheckedContinuation { continuation in
             UNUserNotificationCenter.current().getNotificationSettings { settings in
                 let state: NotificationAuthorizationState = switch settings.authorizationStatus {
                 case .notDetermined: .notDetermined
@@ -37,6 +39,10 @@ actor NotificationService {
                 continuation.resume(returning: state)
             }
         }
+    }
+
+    private static var canAccessSystemNotificationCenter: Bool {
+        Bundle.main.bundleURL.pathExtension == "app" && Bundle.main.bundleIdentifier != nil
     }
 
     func evaluate(previous: CodexUsageSnapshot?, current: CodexUsageSnapshot, reset: Bool) async {

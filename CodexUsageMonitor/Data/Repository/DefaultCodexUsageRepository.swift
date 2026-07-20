@@ -1,6 +1,6 @@
 import Foundation
 
-actor DefaultCodexUsageRepository {
+actor DefaultCodexUsageRepository: CodexUsageRepository {
     private struct AnalyticsFetchResult: Sendable {
         let index: Int
         let identifier: String
@@ -114,7 +114,7 @@ actor DefaultCodexUsageRepository {
         throw lastError
     }
 
-    func currentDiagnostic() -> DataSourceDiagnostic { diagnostic }
+    func currentDiagnostic() async -> DataSourceDiagnostic { diagnostic }
 
     private func timeout(for source: any CodexUsageDataSource) -> Duration {
         source.sourceKind == .localCodexSession ? .seconds(45) : requestTimeout

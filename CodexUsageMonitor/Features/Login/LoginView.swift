@@ -22,7 +22,7 @@ struct LoginView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            Button { session.openUsagePage() } label: {
+            Button { session.openUsagePage(forceReload: true) } label: {
                 Label("重新加载", systemImage: "arrow.clockwise")
             }
             .buttonStyle(GlassButtonStyle())

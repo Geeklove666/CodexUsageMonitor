@@ -42,6 +42,78 @@ final class ModelAndFormattingTests: XCTestCase {
     }
 }
 
+final class RefreshPolicyTests: XCTestCase {
+    private let policy = RefreshPolicy()
+
+    func testExplicitFrequencyAndFailureBackoffPreserveExistingSchedule() {
+        let delay = policy.automaticDelay(
+            configuredSeconds: AutoRefreshFrequency.oneMinute.rawValue,
+            failureCount: 4,
+            lastMenuOpenAt: nil,
+            now: .now,
+            isLowPowerModeEnabled: false,
+            hasThermalPressure: false,
+            jitterFactor: 1
+        )
+        XCTAssertEqual(delay, 600)
+    }
+
+    func testAdaptiveFrequencyTracksRecentMenuActivity() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        XCTAssertEqual(policy.automaticDelay(
+            configuredSeconds: AutoRefreshFrequency.adaptive.rawValue,
+            failureCount: 0,
+            lastMenuOpenAt: now.addingTimeInterval(-120),
+            now: now,
+            isLowPowerModeEnabled: false,
+            hasThermalPressure: false,
+            jitterFactor: 1
+        ), 60)
+        XCTAssertEqual(policy.automaticDelay(
+            configuredSeconds: AutoRefreshFrequency.adaptive.rawValue,
+            failureCount: 0,
+            lastMenuOpenAt: now.addingTimeInterval(-1_800),
+            now: now,
+            isLowPowerModeEnabled: false,
+            hasThermalPressure: false,
+            jitterFactor: 1
+        ), 300)
+    }
+
+    func testAdaptiveFrequencySlowsDownForLowPowerMode() {
+        XCTAssertEqual(policy.automaticDelay(
+            configuredSeconds: AutoRefreshFrequency.adaptive.rawValue,
+            failureCount: 0,
+            lastMenuOpenAt: .now,
+            now: .now,
+            isLowPowerModeEnabled: true,
+            hasThermalPressure: false,
+            jitterFactor: 1
+        ), 600)
+    }
+
+    func testMenuOpenRefreshesCachedOrStaleDataButNotLiveFreshData() {
+        let now = Date.now
+        let fresh = CodexUsageSnapshot(
+            fetchedAt: now.addingTimeInterval(-30),
+            primaryWindow: UsageLimitWindow(kind: .primary, remainingPercentage: 80, usedPercentage: 20, resetsAt: nil, durationDescription: nil),
+            sourceKind: .officialWebPage,
+            sourceDisplayName: "test",
+            confidence: .high,
+            fieldCompleteness: 0.5
+        )
+        XCTAssertFalse(policy.shouldRefreshOnMenuOpen(
+            snapshot: fresh, lastError: nil, isRefreshing: false, maxAge: 120, now: now
+        ))
+        XCTAssertTrue(policy.shouldRefreshOnMenuOpen(
+            snapshot: .unavailable, lastError: nil, isRefreshing: false, maxAge: 120, now: now
+        ))
+        XCTAssertTrue(policy.shouldRefreshOnMenuOpen(
+            snapshot: fresh, lastError: "失败", isRefreshing: false, maxAge: 120, now: now
+        ))
+    }
+}
+
 final class MonitoringStatusTests: XCTestCase {
     func testCachedSnapshotStillReportsRefreshingWhileRequestIsRunning() {
         let cached = CodexUsageSnapshot(
@@ -63,6 +135,26 @@ final class MonitoringStatusTests: XCTestCase {
             sourceKind: .officialWebPage, sourceDisplayName: "test", confidence: .high, fieldCompleteness: 0.25
         )
         XCTAssertEqual(MonitoringStatus(snapshot: snapshot, lastError: "读取超时", isRefreshing: false), .degraded)
+    }
+}
+
+final class UsagePresentationStateTests: XCTestCase {
+    func testRefreshAndExhaustedStatesTakePriority() {
+        let exhausted = CodexUsageSnapshot(
+            primaryWindow: UsageLimitWindow(kind: .primary, remainingPercentage: 0, usedPercentage: 100, resetsAt: nil, durationDescription: nil),
+            sourceKind: .officialWebPage, sourceDisplayName: "test", confidence: .high, fieldCompleteness: 0.25
+        )
+        XCTAssertEqual(UsagePresentationState(snapshot: exhausted, lastError: nil, isRefreshing: true), .loading)
+        XCTAssertEqual(UsagePresentationState(snapshot: exhausted, lastError: nil, isRefreshing: false), .exhausted)
+    }
+
+    func testOfflineAndFailedRefreshRemainDistinct() {
+        XCTAssertEqual(UsagePresentationState(snapshot: .unavailable, lastError: "当前网络不可用", isRefreshing: false), .offline)
+        let retained = CodexUsageSnapshot(
+            primaryWindow: UsageLimitWindow(kind: .primary, remainingPercentage: 60, usedPercentage: 40, resetsAt: nil, durationDescription: nil),
+            sourceKind: .officialWebPage, sourceDisplayName: "test", confidence: .high, fieldCompleteness: 0.25
+        )
+        XCTAssertEqual(UsagePresentationState(snapshot: retained, lastError: "读取超时", isRefreshing: false), .failed)
     }
 }
 
@@ -108,6 +200,150 @@ final class AutoRefreshFrequencyTests: XCTestCase {
         XCTAssertEqual(AutoRefreshFrequency.sanitizedSeconds(600), 600)
         XCTAssertEqual(AutoRefreshFrequency.sanitizedSeconds(30), AutoRefreshFrequency.defaultValue.rawValue)
         XCTAssertEqual(AutoRefreshFrequency.sanitizedSeconds(1_800), AutoRefreshFrequency.defaultValue.rawValue)
+    }
+}
+
+final class UsageTrendBuilderTests: XCTestCase {
+    func testBuildsChronologicalPointsFromRealSamplesAndMarksRecoveryAsReset() {
+        let base = Date(timeIntervalSince1970: 1_000)
+        let firstWindowReset = base.addingTimeInterval(3_600)
+        let secondWindowReset = base.addingTimeInterval(7_200)
+        let samples = [
+            UsageHistorySample(recordedAt: base.addingTimeInterval(120), remainingPercentage: 91,
+                               resetsAt: secondWindowReset, isCached: false),
+            UsageHistorySample(recordedAt: base, remainingPercentage: 20,
+                               resetsAt: firstWindowReset, isCached: false),
+            UsageHistorySample(recordedAt: base.addingTimeInterval(60), remainingPercentage: 18,
+                               resetsAt: firstWindowReset, isCached: true)
+        ]
+
+        let points = UsageTrendBuilder.makePoints(from: samples)
+
+        XCTAssertEqual(points.map(\.date), [base, base.addingTimeInterval(60), base.addingTimeInterval(120)])
+        XCTAssertEqual(points.map(\.remainingPercentage), [20, 18, 91])
+        XCTAssertEqual(points.map(\.isReset), [false, false, true])
+        XCTAssertTrue(points[1].isCached)
+    }
+
+    func testHistoryRangeUsesRequestedWindow() {
+        let now = Date(timeIntervalSince1970: 3_000_000)
+        XCTAssertEqual(now.timeIntervalSince(UsageHistoryRange.day.startDate(relativeTo: now)), 86_400)
+        XCTAssertEqual(now.timeIntervalSince(UsageHistoryRange.week.startDate(relativeTo: now)), 604_800)
+        XCTAssertEqual(now.timeIntervalSince(UsageHistoryRange.month.startDate(relativeTo: now)), 2_592_000)
+    }
+
+    func testDownsamplingKeepsBoundsExtremesAndResetMarkers() {
+        let base = Date(timeIntervalSince1970: 10_000)
+        let firstReset = base.addingTimeInterval(2_000)
+        let secondReset = base.addingTimeInterval(4_000)
+        var samples: [UsageHistorySample] = []
+        for index in 0..<500 {
+            let sample = UsageHistorySample(
+                recordedAt: base.addingTimeInterval(Double(index * 60)),
+                remainingPercentage: index == 233 ? 2 : Double(100 - (index % 90)),
+                resetsAt: index < 250 ? firstReset : secondReset,
+                isCached: false
+            )
+            samples.append(sample)
+        }
+        samples[250] = UsageHistorySample(
+            recordedAt: base.addingTimeInterval(15_000),
+            remainingPercentage: 100,
+            resetsAt: secondReset,
+            isCached: false
+        )
+
+        let points = UsageTrendBuilder.makePoints(from: samples, maxPoints: 80)
+
+        XCTAssertLessThanOrEqual(points.count, 80)
+        XCTAssertEqual(points.first?.date, samples.first?.recordedAt)
+        XCTAssertEqual(points.last?.date, samples.last?.recordedAt)
+        XCTAssertTrue(points.contains(where: { $0.remainingPercentage == 2 }))
+        XCTAssertTrue(points.contains(where: { $0.isReset }))
+    }
+
+    func testVelocityUsesOnlySamplesAfterLatestReset() {
+        let now = Date(timeIntervalSince1970: 100_000)
+        let oldReset = now.addingTimeInterval(-7_200)
+        let newReset = now.addingTimeInterval(3_600)
+        let samples = [
+            UsageHistorySample(recordedAt: now.addingTimeInterval(-7_200), remainingPercentage: 12, resetsAt: oldReset, isCached: false),
+            UsageHistorySample(recordedAt: now.addingTimeInterval(-3_600), remainingPercentage: 100, resetsAt: newReset, isCached: false),
+            UsageHistorySample(recordedAt: now, remainingPercentage: 92, resetsAt: newReset, isCached: false)
+        ]
+
+        let velocity = UsageTrendBuilder.makeVelocity(from: samples, now: now)
+
+        XCTAssertEqual(velocity?.consumedPercentage, 8)
+        XCTAssertEqual(velocity?.observationHours, 1)
+    }
+}
+
+final class DailyTokenUsageBuilderTests: XCTestCase {
+    func testBuildsSevenContinuousDaysAndKeepsMissingDaysUnknown() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 7, day: 20, hour: 12)))
+        let day18 = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 7, day: 18)))
+        let day20 = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 7, day: 20)))
+        var analytics = CodexAnalyticsSnapshot(
+            fetchedAt: now,
+            sourceDisplayName: "本机 Codex 用量",
+            rangeStart: day18,
+            rangeEnd: day20,
+            groupBy: "day",
+            dailyActivity: [
+                dailyActivity(date: day18, tokens: 20_000_000),
+                dailyActivity(date: day20, tokens: 50_000_000)
+            ],
+            dailyProductUsage: [],
+            topSkills: [],
+            topPlugins: [],
+            creditEventCount: nil,
+            availableSections: [.tokenUsage],
+            lifetimeTokens: nil,
+            peakDailyTokens: nil,
+            currentStreakDays: nil,
+            longestStreakDays: nil,
+            longestRunningTurnSeconds: nil
+        )
+        analytics.sectionSources[.tokenUsage] = "本机 Codex 用量"
+
+        let result = DailyTokenUsageBuilder.make(analytics: analytics, now: now, calendar: calendar)
+
+        XCTAssertEqual(result.days.count, 7)
+        XCTAssertEqual(result.days[4].tokens, 20_000_000)
+        XCTAssertNil(result.days[5].tokens)
+        XCTAssertEqual(result.days[6].tokens, 50_000_000)
+        XCTAssertEqual(result.totalTokens, 70_000_000)
+        XCTAssertEqual(result.averageTokens, 35_000_000)
+        XCTAssertEqual(result.peakTokens, 50_000_000)
+        XCTAssertEqual(result.sourceName, "本机 Codex 用量")
+    }
+
+    func testUnavailableAnalyticsDoesNotTurnMissingDaysIntoZero() {
+        let result = DailyTokenUsageBuilder.make(analytics: nil)
+
+        XCTAssertEqual(result.days.count, 7)
+        XCTAssertTrue(result.days.allSatisfy { $0.tokens == nil })
+        XCTAssertNil(result.averageTokens)
+        XCTAssertNil(result.peakTokens)
+    }
+
+    private func dailyActivity(date: Date, tokens: Int64) -> CodexDailyActivity {
+        CodexDailyActivity(
+            date: date,
+            users: 0,
+            threads: 0,
+            turns: 0,
+            credits: 0,
+            uncachedInputTokens: 0,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            totalTokens: tokens,
+            clients: [],
+            models: []
+        )
     }
 }
 
@@ -405,7 +641,8 @@ final class LocalRealtimeTokenUsageReaderTests: XCTestCase {
         let reader = LocalRealtimeTokenUsageReader(sessionsRoot: root)
         let analytics = await reader.analyticsSnapshot(now: now, authorizationGranted: true)
         XCTAssertEqual(analytics?.todayTokens, 1_000)
-        XCTAssertEqual(analytics?.sourceDisplayName, "本机 Codex 实时用量")
+        XCTAssertEqual(analytics?.tokens(on: start.addingTimeInterval(-30)), 1_000)
+        XCTAssertEqual(analytics?.sourceDisplayName, "本机 Codex 本地用量")
 
         let appended = event(start.addingTimeInterval(180), 2_500) + "\n"
         let handle = try FileHandle(forWritingTo: file)
@@ -477,6 +714,39 @@ final class OfficialPageConfigurationTests: XCTestCase {
         XCTAssertTrue(OfficialPageConfiguration.isAllowedNavigationHost("chatgpt.com"))
         XCTAssertFalse(OfficialPageConfiguration.isAllowedNavigationHost("unrelated.openai.com"))
         XCTAssertFalse(OfficialPageConfiguration.isAllowedNavigationHost("openai.com.attacker.example"))
+    }
+}
+
+final class LifecycleStructureTests: XCTestCase {
+    func testWebKitIsNotEagerlyLoadedByDependencyContainer() throws {
+        let root = repositoryRoot
+        let source = try String(contentsOf: root
+            .appendingPathComponent("CodexUsageMonitor/App/DependencyContainer.swift"), encoding: .utf8)
+        XCTAssertFalse(source.contains("webSession.openUsagePage()"))
+    }
+
+    func testMenuClockUsesCoarseTimerAndImmediateDataChangeCallback() throws {
+        let source = try String(contentsOf: repositoryRoot
+            .appendingPathComponent("CodexUsageMonitor/Features/MenuBar/MenuBarController.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains("Timer(timeInterval: 30"))
+        XCTAssertTrue(source.contains("monitor.displayStateDidChange"))
+        XCTAssertFalse(source.contains("withTimeInterval: 1"))
+    }
+
+    func testSleepAndWakeLifecycleIsExplicitlyHandled() throws {
+        let source = try String(contentsOf: repositoryRoot
+            .appendingPathComponent("CodexUsageMonitor/Services/AppLifecycleCoordinator.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains("NSWorkspace.willSleepNotification"))
+        XCTAssertTrue(source.contains("NSWorkspace.didWakeNotification"))
+        XCTAssertTrue(source.contains("suspendAutomaticRefresh"))
+        XCTAssertTrue(source.contains("resumeAfterWake"))
+    }
+
+    private var repositoryRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
     }
 }
 
@@ -706,6 +976,31 @@ final class RepositoryTests: XCTestCase {
         let kind = try await repository.fetch().sourceKind
         XCTAssertEqual(kind, .verifiedOfficial)
     }
+    func testCodexProviderAdapterMapsExistingRepositoryWithoutRegisteringFutureUI() async throws {
+        let result = CodexUsageSnapshot(
+            planName: "plus",
+            primaryWindow: UsageLimitWindow(kind: .primary, remainingPercentage: 42, usedPercentage: 58, resetsAt: nil, durationDescription: nil),
+            credits: CreditsUsage(remaining: 2184, used: nil, currencyOrUnit: "Credits", expiresAt: nil),
+            sourceKind: .verifiedOfficial, sourceDisplayName: "test", confidence: .high, fieldCompleteness: 0.5
+        )
+        let unavailable = StubDataSource(
+            "unavailable", kind: .officialWebPage, state: .unavailable("no"),
+            result: .failure(UsageMonitorError.noAvailableDataSource)
+        )
+        let repository = DefaultCodexUsageRepository(
+            official: StubDataSource("official", kind: .verifiedOfficial, result: .success(result)),
+            web: unavailable, cache: CachedSnapshotDataSource(), estimate: LocalEstimateDataSource()
+        )
+        let registry = AIProviderRegistry([CodexUsageProvider(repository: repository)])
+
+        XCTAssertEqual(registry.registeredProviderIDs, [.codex])
+        XCTAssertNil(registry.provider(for: .claude))
+        let provider = try XCTUnwrap(registry.provider(for: .codex))
+        let generic = try await provider.fetchUsage(forceRefresh: false)
+        XCTAssertEqual(generic.provider.id, .codex)
+        XCTAssertEqual(generic.quotaWindows.first?.remainingPercentage, 42)
+        XCTAssertEqual(generic.balance?.remaining, 2184)
+    }
     func testOfficialUnavailableFallsBackToWeb() async throws {
         let repository = DefaultCodexUsageRepository(
             official: StubDataSource("official", kind: .verifiedOfficial, state: .unavailable("no"), result: .failure(UsageMonitorError.noAvailableDataSource)),
@@ -856,14 +1151,18 @@ final class NativeUISnapshotSmokeTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let sourceURL = repositoryRoot
-            .appendingPathComponent("CodexUsageMonitor/Features/Dashboard/DashboardView.swift")
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let dashboardDirectory = repositoryRoot
+            .appendingPathComponent("CodexUsageMonitor/Features/Dashboard")
+        var source = try ["DashboardView.swift", "DashboardComponents.swift", "DashboardModels.swift"]
+            .map { try String(contentsOf: dashboardDirectory.appendingPathComponent($0), encoding: .utf8) }
+            .joined(separator: "\n")
+        source += try String(contentsOf: repositoryRoot
+            .appendingPathComponent("CodexUsageMonitor/Domain/UsagePresentationState.swift"), encoding: .utf8)
 
         for destination in ["概览", "使用历史", "告警", "数据来源", "设置"] {
             XCTAssertTrue(source.contains(destination), "Missing dashboard destination: \(destination)")
         }
-        for state in ["live", "loading", "cached", "estimated", "offline", "unavailable", "exhausted"] {
+        for state in ["live", "loading", "cached", "estimated", "offline", "needsLogin", "failed", "unavailable", "exhausted"] {
             XCTAssertTrue(source.contains("case \(state)"), "Missing dashboard state: \(state)")
         }
         for plan in ["$0/月", "$8/月", "$20/月", "$100/月", "$200/月"] {
@@ -872,7 +1171,12 @@ final class NativeUISnapshotSmokeTests: XCTestCase {
         XCTAssertTrue(source.contains("自动刷新频率"))
         XCTAssertTrue(source.contains("AutoRefreshFrequency.allCases"))
         XCTAssertTrue(source.contains("真实刷新诊断"))
-        XCTAssertTrue(source.contains("DemoQuotaSnapshot.make(snapshot: monitor.snapshot"))
+        XCTAssertTrue(source.contains("DashboardQuotaSnapshot.make(snapshot: monitor.snapshot"))
+        XCTAssertTrue(source.contains("historyModel.points"))
+        XCTAssertFalse(source.contains("GlassButtonStyle(tint: AppleUI.accent)"),
+                       "Dashboard actions should use neutral glass instead of a saturated blue fill.")
+        XCTAssertFalse(source.contains("DemoTrendPoint"))
+        XCTAssertFalse(source.contains("DemoAlertRule"))
         XCTAssertFalse(source.contains("Picker(\"Demo 状态\""))
         XCTAssertFalse(source.contains("Demo 界面壳"))
         XCTAssertFalse(source.contains("Demo 数值"))
@@ -964,9 +1268,9 @@ final class NativeUISnapshotSmokeTests: XCTestCase {
         let analyticsSource = try String(contentsOf: repositoryRoot
             .appendingPathComponent("CodexUsageMonitor/Shared/Components/AnalyticsComponents.swift"), encoding: .utf8)
 
-        XCTAssertTrue(menuSource.contains("AppleCard(padding: 11, cornerRadius: 16, shadowRadius: 8, shadowY: 2, material: nil)"))
-        XCTAssertTrue(monitoringSource.contains("AppleCard(padding: 12, cornerRadius: 16, shadowRadius: 12, shadowY: 3, material: nil)"))
-        XCTAssertTrue(analyticsSource.contains("AppleCard(padding: 9, cornerRadius: 17, shadowRadius: 14, shadowY: 4, material: nil)"))
+        XCTAssertTrue(menuSource.contains("AppleCard(padding: 11, cornerRadius: 16, material: nil)"))
+        XCTAssertTrue(monitoringSource.contains("AppleCard(padding: 12, cornerRadius: 16, material: nil)"))
+        XCTAssertTrue(analyticsSource.contains("AppleCard(padding: 9, cornerRadius: 17, material: nil)"))
     }
 
     func testCompactUsageSummaryRendersAtMenuWidth() throws {

@@ -42,7 +42,7 @@ final class UsageSnapshotEntity {
 }
 
 @MainActor
-final class UsageHistoryStore {
+final class UsageHistoryStore: UsageHistoryReading, UsageHistoryWriting {
     let container: ModelContainer
     private var context: ModelContext { container.mainContext }
 
@@ -80,6 +80,20 @@ final class UsageHistoryStore {
     func points(since date: Date) throws -> [UsageSnapshotEntity] {
         let descriptor = FetchDescriptor<UsageSnapshotEntity>(predicate: #Predicate { $0.fetchedAt >= date }, sortBy: [SortDescriptor(\.fetchedAt)])
         return try context.fetch(descriptor)
+    }
+
+    func usageSamples(since date: Date) throws -> [UsageHistorySample] {
+        try points(since: date).compactMap { entity in
+            guard !entity.isEstimated, let remaining = entity.primaryRemaining else { return nil }
+            return UsageHistorySample(
+                id: entity.id,
+                recordedAt: entity.fetchedAt,
+                remainingPercentage: remaining,
+                resetsAt: entity.primaryReset,
+                resetAllowanceAvailable: entity.restoredResetAllowance?.availableCount,
+                isCached: entity.isCached
+            )
+        }
     }
 
     func recentSnapshots(limit: Int = 12) throws -> [CodexUsageSnapshot] {
