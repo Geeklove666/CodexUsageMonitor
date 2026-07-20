@@ -49,6 +49,9 @@ final class NativeUISnapshotSmokeTests: XCTestCase {
         XCTAssertTrue(source.contains("自动刷新频率"))
         XCTAssertTrue(source.contains("AutoRefreshFrequency.allCases"))
         XCTAssertTrue(source.contains("真实刷新诊断"))
+        XCTAssertTrue(source.contains("Label(\"OpenAI 登录\", systemImage: \"person.crop.circle\")"))
+        XCTAssertTrue(source.contains("Label(\"刷新真实来源\", systemImage: \"arrow.clockwise\")"))
+        XCTAssertTrue(source.contains(".buttonStyle(.bordered)"))
         XCTAssertTrue(source.contains("DashboardQuotaSnapshot.make(snapshot: monitor.snapshot"))
         XCTAssertTrue(source.contains("historyModel.points"))
         XCTAssertFalse(source.contains("GlassButtonStyle(tint: AppleUI.accent)"),

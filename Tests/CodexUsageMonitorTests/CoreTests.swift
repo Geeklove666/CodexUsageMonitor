@@ -672,7 +672,7 @@ final class LocalRealtimeTokenUsageReaderTests: XCTestCase {
         let analytics = await reader.analyticsSnapshot(now: now, authorizationGranted: true)
         XCTAssertEqual(analytics?.todayTokens, 1_000)
         XCTAssertEqual(analytics?.tokens(on: start.addingTimeInterval(-30)), 1_000)
-        XCTAssertEqual(analytics?.sourceDisplayName, "本机 Codex 本地用量")
+        XCTAssertEqual(analytics?.sourceDisplayName, "本机 Codex 实时用量")
 
         let appended = event(start.addingTimeInterval(180), 2_500) + "\n"
         let handle = try FileHandle(forWritingTo: file)
@@ -712,6 +712,28 @@ final class LocalRealtimeTokenUsageReaderTests: XCTestCase {
         XCTAssertEqual(merged.tokens(on: yesterday, calendar: calendar), 500)
         XCTAssertEqual(merged.tokens(on: today, calendar: calendar), 900)
         XCTAssertEqual(merged.sourceDisplayName, "本机 Codex（实时 + 历史）")
+        XCTAssertEqual(merged.compactSourceDisplayName, "本机实时")
+    }
+
+    func testLegacyRealtimeSourceNameIsCanonicalizedInsteadOfRepeated() throws {
+        let today = Calendar.current.startOfDay(for: .now)
+        func snapshot(source: String) -> CodexAnalyticsSnapshot {
+            CodexAnalyticsSnapshot(
+                fetchedAt: .now, sourceDisplayName: source, rangeStart: today, rangeEnd: today,
+                groupBy: "day", dailyActivity: [
+                    CodexDailyActivity(date: today, users: 0, threads: 0, turns: 0, credits: 0,
+                        uncachedInputTokens: 0, cachedInputTokens: 0, outputTokens: 0,
+                        totalTokens: 500, clients: [], models: [])
+                ], dailyProductUsage: [], topSkills: [], topPlugins: [], creditEventCount: nil,
+                availableSections: [.tokenUsage], lifetimeTokens: nil, peakDailyTokens: nil,
+                currentStreakDays: nil, longestStreakDays: nil, longestRunningTurnSeconds: nil
+            )
+        }
+
+        let legacyComposite = snapshot(source: "本机 Codex 本地用量 + 本机 Codex 本地用量")
+        let merged = legacyComposite.merging(snapshot(source: "本机 Codex 本地用量"))
+
+        XCTAssertEqual(merged.sourceDisplayName, "本机 Codex 实时用量")
         XCTAssertEqual(merged.compactSourceDisplayName, "本机实时")
     }
 }

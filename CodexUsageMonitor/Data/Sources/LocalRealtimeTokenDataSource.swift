@@ -81,7 +81,7 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
         guard !tokensByDay.isEmpty else { return nil }
         var value = CodexAnalyticsSnapshot(
             fetchedAt: now,
-            sourceDisplayName: "本机 Codex 本地用量",
+            sourceDisplayName: "本机 Codex 实时用量",
             rangeStart: rangeStart,
             rangeEnd: Calendar.current.startOfDay(for: now),
             groupBy: "day",

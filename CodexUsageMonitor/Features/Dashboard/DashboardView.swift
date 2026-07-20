@@ -243,20 +243,17 @@ struct DashboardView: View {
                     Divider()
                     HStack {
                         Button { openWindow(id: "login"); webSession.openUsagePage(); NSApp.activate() } label: {
-                            Label {
-                                Text("OpenAI 登录")
-                                    .foregroundStyle(.primary)
-                            } icon: {
-                                Image(systemName: "person.crop.circle")
-                                    .symbolRenderingMode(.hierarchical)
-                                    .foregroundStyle(AppleUI.accent)
-                            }
+                            Label("OpenAI 登录", systemImage: "person.crop.circle")
                         }
-                        .buttonStyle(GlassButtonStyle())
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                        .labelStyle(.titleAndIcon)
                         Button { Task { await monitor.refresh() } } label: {
                             Label("刷新真实来源", systemImage: "arrow.clockwise")
                         }
-                        .buttonStyle(GlassButtonStyle())
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                        .labelStyle(.titleAndIcon)
                     }
                 }
             }

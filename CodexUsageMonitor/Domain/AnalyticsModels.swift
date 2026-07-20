@@ -115,13 +115,18 @@ struct CodexAnalyticsSnapshot: Sendable, Codable, Equatable {
         }
         let mergedSourceName: String = {
             let hasRealtime = sources.contains {
-                $0.contains("本机 Codex 实时") || $0.contains("本机 Codex（实时")
+                $0.contains("本机 Codex 实时")
+                    || $0.contains("本机 Codex（实时")
+                    || $0.contains("本机 Codex 本地用量")
             }
             let hasLocalHistory = sources.contains {
                 $0.contains("本机 Codex 用量") || $0.contains("实时 + 历史")
             }
             if hasRealtime && hasLocalHistory {
                 return "本机 Codex（实时 + 历史）"
+            }
+            if hasRealtime {
+                return "本机 Codex 实时用量"
             }
             return sources.joined(separator: " + ")
         }()
@@ -149,7 +154,9 @@ struct CodexAnalyticsSnapshot: Sendable, Codable, Equatable {
     }
 
     var compactSourceDisplayName: String {
-        if sourceDisplayName.contains("本机 Codex（实时") || sourceDisplayName.contains("本机 Codex 实时") {
+        if sourceDisplayName.contains("本机 Codex（实时")
+            || sourceDisplayName.contains("本机 Codex 实时")
+            || sourceDisplayName.contains("本机 Codex 本地用量") {
             return "本机实时"
         }
         if sourceDisplayName == "本机 Codex 用量" { return "本机 Codex" }
