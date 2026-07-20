@@ -1,5 +1,4 @@
 import AppKit
-import SwiftData
 import SwiftUI
 
 @MainActor
@@ -158,7 +157,6 @@ final class MenuBarController: NSObject {
                 size: NSSize(width: 960, height: 680),
                 content: DashboardView(monitor: monitor, history: history)
                     .environment(webSession)
-                    .modelContainer(history.container)
             )
         }
         show(dashboardWindow)

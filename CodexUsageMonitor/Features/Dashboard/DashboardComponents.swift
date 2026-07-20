@@ -370,9 +370,9 @@ struct InlineNotice: View {
             Spacer()
         }
         .padding(12)
-        .background(status.color.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(status.color.opacity(0.08), in: RoundedRectangle(cornerRadius: AppleUI.controlRadius, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: AppleUI.controlRadius, style: .continuous)
                 .strokeBorder(status.color.opacity(0.18), lineWidth: 0.75)
         }
         .accessibilityElement(children: .combine)

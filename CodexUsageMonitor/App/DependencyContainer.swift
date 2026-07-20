@@ -10,21 +10,38 @@ final class DependencyContainer {
     let lifecycleCoordinator: AppLifecycleCoordinator
 
     init() {
+        let persistenceLogger = AppLogger(.persistence)
         var persistenceWarnings: [String] = []
         do {
             history = try UsageHistoryStore()
         } catch {
-            history = try! UsageHistoryStore(inMemory: true)
-            persistenceWarnings.append("历史数据库无法打开，本次改用临时内存存储：\(SensitiveDataRedactor().redact(error.localizedDescription))")
+            let persistentFailure = UsageFailure(error: error)
+            persistenceLogger.error("Persistent history store failed: \(persistentFailure.diagnosticMessage)")
+            do {
+                history = try UsageHistoryStore(inMemory: true)
+                persistenceWarnings.append("历史数据库无法打开，本次改用临时内存存储：\(persistentFailure.userMessage)")
+            } catch {
+                let memoryFailure = UsageFailure(error: error)
+                history = .disabled()
+                persistenceWarnings.append("历史功能暂时不可用，额度监控仍可继续：\(memoryFailure.userMessage)")
+                persistenceLogger.error("In-memory history store failed: \(memoryFailure.diagnosticMessage)")
+            }
         }
-        let configuredRetention = UserDefaults.standard.object(forKey: "retentionDays") == nil ? 30 : UserDefaults.standard.integer(forKey: "retentionDays")
-        do { try history.cleanup(retentionDays: configuredRetention.clamped(to: 7...90)) }
-        catch { persistenceWarnings.append("历史清理失败：\(SensitiveDataRedactor().redact(error.localizedDescription))") }
         let restored: [CodexUsageSnapshot]
-        do { restored = try history.recentSnapshots(limit: 24) }
-        catch {
+        if history.isAvailable {
+            let configuredRetention = UserDefaults.standard.object(forKey: AppPreferences.Key.retentionDays) == nil
+                ? AppConfiguration.Persistence.defaultRetentionDays
+                : UserDefaults.standard.integer(forKey: AppPreferences.Key.retentionDays)
+            let retentionRange = AppConfiguration.Persistence.minimumRetentionDays...AppConfiguration.Persistence.maximumRetentionDays
+            do { try history.cleanup(retentionDays: configuredRetention.clamped(to: retentionRange)) }
+            catch { persistenceWarnings.append("历史清理失败：\(SensitiveDataRedactor().redact(error.localizedDescription))") }
+            do { restored = try history.recentSnapshots(limit: AppConfiguration.Persistence.restoredSnapshotLimit) }
+            catch {
+                restored = []
+                persistenceWarnings.append("历史恢复失败：\(SensitiveDataRedactor().redact(error.localizedDescription))")
+            }
+        } else {
             restored = []
-            persistenceWarnings.append("历史恢复失败：\(SensitiveDataRedactor().redact(error.localizedDescription))")
         }
         let cache = CachedSnapshotDataSource(snapshot: restored.last)
         let estimate = LocalEstimateDataSource(history: restored)
@@ -40,7 +57,10 @@ final class DependencyContainer {
             analyticsSources: [localCodexSource, webSource],
             cache: cache, estimate: estimate)
         let initialSnapshot = restored.last.flatMap {
-            try? CachedSnapshotDataSource.cachedSnapshot(from: $0, maximumAge: 86_400)
+            try? CachedSnapshotDataSource.cachedSnapshot(
+                from: $0,
+                maximumAge: AppConfiguration.Persistence.restoredSnapshotMaximumAge
+            )
         } ?? .unavailable
         let snapshotPipeline = UsageSnapshotPipeline(history: history)
         monitoring = UsageMonitoringService(
@@ -54,9 +74,7 @@ final class DependencyContainer {
         monitoring.persistenceWarning = persistenceWarnings.isEmpty ? nil : persistenceWarnings.joined(separator: "\n")
         webSession.onPageReady = { [weak monitoring] in
             Task { @MainActor in
-                // Let any launch-time refresh finish before consuming the restored session.
-                try? await Task.sleep(for: .milliseconds(350))
-                await monitoring?.refresh()
+                await monitoring?.refresh(reason: "网页登录就绪", forceRefresh: true)
             }
         }
         monitoring.start()

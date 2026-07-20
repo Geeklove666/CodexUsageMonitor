@@ -1,7 +1,7 @@
 import Foundation
 
 enum LocalRealtimeTokenAuthorization {
-    static let preferenceKey = "localRealtimeTokenUsageEnabled"
+    static let preferenceKey = AppPreferences.Key.localRealtimeTokenUsageEnabled
 }
 
 struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
@@ -18,6 +18,14 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
         let url: URL
         let size: Int64
         let modifiedAt: Date
+    }
+
+    fileprivate struct FileScanState: Sendable {
+        let size: Int64
+        let modifiedAt: Date
+        let scannedOffset: UInt64
+        let previousTotal: Int64?
+        let tokensByDay: [Date: Int64]
     }
 
     private struct RolloutEvent: Decodable {
@@ -47,51 +55,35 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
         let startOfToday = calendar.startOfDay(for: now)
         guard let rangeStart = calendar.date(byAdding: .day, value: -6, to: startOfToday),
               let files = rolloutFiles(modifiedSince: rangeStart) else { return nil }
-        if let cached = await cache.value(rangeStart: rangeStart, files: files) { return cached }
-        let value = await Task.detached(priority: .utility) {
-            Self.snapshot(now: now, rangeStart: rangeStart, calendar: calendar, files: files)
+        let previousStates = await cache.states(for: files)
+        let states = await Task.detached(priority: .utility) {
+            Dictionary(uniqueKeysWithValues: files.map { file in
+                (file.url, Self.scan(file: file, previous: previousStates[file.url],
+                                     now: now, rangeStart: rangeStart, calendar: calendar))
+            })
         }.value
-        await cache.store(value, rangeStart: rangeStart, files: files)
-        return value
+        await cache.store(states, retaining: files)
+        return Self.snapshot(now: now, rangeStart: rangeStart, states: states)
     }
 
     func currentAnalyticsSnapshot() async -> CodexAnalyticsSnapshot? {
         await analyticsSnapshot(now: .now, authorizationGranted: nil)
     }
 
-    private static func snapshot(now: Date, rangeStart: Date, calendar: Calendar,
-                                 files: [RolloutFile]) -> CodexAnalyticsSnapshot? {
-        let decoder = JSONDecoder()
-        let fractionalTimestamp = ISO8601DateFormatter()
-        fractionalTimestamp.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let standardTimestamp = ISO8601DateFormatter()
+    private static func snapshot(now: Date, rangeStart: Date,
+                                 states: [URL: FileScanState]) -> CodexAnalyticsSnapshot? {
         var tokensByDay: [Date: Int64] = [:]
-        var observedEvents = 0
-
-        for file in files {
-            var previousTotal: Int64?
-            scanTokenCountLines(at: file.url) { line in
-                guard let event = try? decoder.decode(RolloutEvent.self, from: line),
-                      event.payload.type == "token_count",
-                      let info = event.payload.info,
-                      let timestamp = fractionalTimestamp.date(from: event.timestamp)
-                        ?? standardTimestamp.date(from: event.timestamp) else { return }
-                let current = info.totalTokenUsage.totalTokens
-                defer { previousTotal = current }
-                guard timestamp >= rangeStart, timestamp <= now.addingTimeInterval(60) else { return }
-                let increment = previousTotal.map { current >= $0 ? current - $0 : current } ?? current
-                guard increment >= 0 else { return }
-                tokensByDay[calendar.startOfDay(for: timestamp), default: 0] += increment
-                observedEvents += 1
+        for state in states.values {
+            for (date, tokens) in state.tokensByDay where date >= rangeStart {
+                tokensByDay[date, default: 0] += tokens
             }
         }
-
-        guard observedEvents > 0 else { return nil }
+        guard !tokensByDay.isEmpty else { return nil }
         var value = CodexAnalyticsSnapshot(
             fetchedAt: now,
             sourceDisplayName: "本机 Codex 本地用量",
             rangeStart: rangeStart,
-            rangeEnd: calendar.startOfDay(for: now),
+            rangeEnd: Calendar.current.startOfDay(for: now),
             groupBy: "day",
             dailyActivity: tokensByDay.keys.sorted().map { date in
                 CodexDailyActivity(
@@ -124,41 +116,99 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
         }.sorted { $0.url.path < $1.url.path }
     }
 
-    private static func scanTokenCountLines(at url: URL, consume: (Data) -> Void) {
-        guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]), !data.isEmpty else { return }
+    private static func scan(file: RolloutFile, previous: FileScanState?, now: Date,
+                             rangeStart: Date, calendar: Calendar) -> FileScanState {
+        if let previous, previous.size == file.size, previous.modifiedAt == file.modifiedAt {
+            return pruning(previous, rangeStart: rangeStart)
+        }
+
+        let canContinue = previous.map {
+            file.size > $0.size && $0.scannedOffset <= UInt64(max(0, $0.size))
+        } ?? false
+        let startingOffset = canContinue ? previous?.scannedOffset ?? 0 : 0
+        var previousTotal = canContinue ? previous?.previousTotal : nil
+        var tokensByDay = canContinue ? previous?.tokensByDay ?? [:] : [:]
+        let data: Data
+        do {
+            let handle = try FileHandle(forReadingFrom: file.url)
+            defer { try? handle.close() }
+            try handle.seek(toOffset: startingOffset)
+            data = try handle.readToEnd() ?? Data()
+        } catch {
+            return pruning(previous ?? FileScanState(
+                size: file.size, modifiedAt: file.modifiedAt, scannedOffset: 0,
+                previousTotal: nil, tokensByDay: [:]
+            ), rangeStart: rangeStart)
+        }
+
+        let decoder = JSONDecoder()
+        let fractionalTimestamp = ISO8601DateFormatter()
+        fractionalTimestamp.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let standardTimestamp = ISO8601DateFormatter()
         let tokenMarker = Data("\"token_count\"".utf8)
         var cursor = data.startIndex
-        while cursor < data.endIndex,
-              let marker = data.range(of: tokenMarker, options: [], in: cursor..<data.endIndex) {
-            let lineStart = data[..<marker.lowerBound].lastIndex(of: 0x0A)
-                .map { data.index(after: $0) } ?? data.startIndex
-            let lineEnd = data[marker.upperBound...].firstIndex(of: 0x0A) ?? data.endIndex
-            if data.distance(from: lineStart, to: lineEnd) <= 1_048_576 {
-                consume(data.subdata(in: lineStart..<lineEnd))
+        var consumed = data.startIndex
+        while cursor < data.endIndex {
+            let newline = data[cursor...].firstIndex(of: 0x0A)
+            let lineEnd = newline ?? data.endIndex
+            let line = data.subdata(in: cursor..<lineEnd)
+            var mayAdvance = true
+            if line.count <= 1_048_576, line.range(of: tokenMarker) != nil {
+                if let event = try? decoder.decode(RolloutEvent.self, from: line),
+                   event.payload.type == "token_count",
+                   let info = event.payload.info,
+                   let timestamp = fractionalTimestamp.date(from: event.timestamp)
+                    ?? standardTimestamp.date(from: event.timestamp) {
+                    let current = info.totalTokenUsage.totalTokens
+                    let increment = previousTotal.map { current >= $0 ? current - $0 : current } ?? current
+                    previousTotal = current
+                    if timestamp >= rangeStart, timestamp <= now.addingTimeInterval(60), increment >= 0 {
+                        tokensByDay[calendar.startOfDay(for: timestamp), default: 0] += increment
+                    }
+                } else if newline == nil {
+                    mayAdvance = false
+                }
             }
-            guard lineEnd < data.endIndex else { break }
-            cursor = data.index(after: lineEnd)
+            guard mayAdvance else { break }
+            consumed = newline.map { data.index(after: $0) } ?? lineEnd
+            guard let newline else { break }
+            cursor = data.index(after: newline)
         }
+
+        tokensByDay = tokensByDay.filter { $0.key >= rangeStart }
+        return FileScanState(
+            size: file.size,
+            modifiedAt: file.modifiedAt,
+            scannedOffset: startingOffset + UInt64(data.distance(from: data.startIndex, to: consumed)),
+            previousTotal: previousTotal,
+            tokensByDay: tokensByDay
+        )
+    }
+
+    private static func pruning(_ state: FileScanState, rangeStart: Date) -> FileScanState {
+        FileScanState(
+            size: state.size,
+            modifiedAt: state.modifiedAt,
+            scannedOffset: state.scannedOffset,
+            previousTotal: state.previousTotal,
+            tokensByDay: state.tokensByDay.filter { $0.key >= rangeStart }
+        )
     }
 
 }
 
 private actor LocalRealtimeTokenScanCache {
-    private var rangeStart: Date?
-    private var files: [LocalRealtimeTokenUsageReader.RolloutFile] = []
-    private var snapshot: CodexAnalyticsSnapshot?
-    private var hasValue = false
+    private var fileStates: [URL: LocalRealtimeTokenUsageReader.FileScanState] = [:]
 
-    func value(rangeStart: Date, files: [LocalRealtimeTokenUsageReader.RolloutFile]) -> CodexAnalyticsSnapshot? {
-        guard hasValue, self.rangeStart == rangeStart, self.files == files else { return nil }
-        return snapshot
+    func states(for files: [LocalRealtimeTokenUsageReader.RolloutFile])
+        -> [URL: LocalRealtimeTokenUsageReader.FileScanState] {
+        let active = Set(files.map(\.url))
+        return fileStates.filter { active.contains($0.key) }
     }
 
-    func store(_ snapshot: CodexAnalyticsSnapshot?, rangeStart: Date,
-               files: [LocalRealtimeTokenUsageReader.RolloutFile]) {
-        self.rangeStart = rangeStart
-        self.files = files
-        self.snapshot = snapshot
-        hasValue = true
+    func store(_ states: [URL: LocalRealtimeTokenUsageReader.FileScanState],
+               retaining files: [LocalRealtimeTokenUsageReader.RolloutFile]) {
+        let active = Set(files.map(\.url))
+        fileStates = states.filter { active.contains($0.key) }
     }
 }

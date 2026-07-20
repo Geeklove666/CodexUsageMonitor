@@ -9,10 +9,13 @@ enum AppleUI {
     static let contentPadding: CGFloat = 24
     static let panelPadding: CGFloat = 12
 
-    static let smallRadius: CGFloat = 13
-    static let cardRadius: CGFloat = 12
-    static let heroRadius: CGFloat = 12
-    static let largeRadius: CGFloat = 16
+    static let iconRadius: CGFloat = 10
+    static let controlRadius: CGFloat = 13
+    static let cardRadius: CGFloat = 16
+    static let panelRadius: CGFloat = 24
+    static let smallRadius = controlRadius
+    static let heroRadius = cardRadius
+    static let largeRadius = cardRadius
     static let controlHeight: CGFloat = 42
 
     static let accent = Color(nsColor: .controlAccentColor)
@@ -91,9 +94,9 @@ struct SymbolTile: View {
             .symbolRenderingMode(.hierarchical)
             .foregroundStyle(color)
             .frame(width: 30, height: 30)
-            .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: AppleUI.iconRadius, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: AppleUI.iconRadius, style: .continuous)
                     .strokeBorder(.white.opacity(0.12), lineWidth: 0.6)
             }
     }
@@ -108,9 +111,9 @@ struct GlassButtonStyle: ButtonStyle {
             .font(.subheadline.weight(.semibold))
             .padding(.horizontal, 15)
             .frame(minHeight: 38)
-            .liquidGlassSurface(cornerRadius: 14, tint: tint, interactive: true)
-            .background((tint ?? Color.primary).opacity(feedback.fillOpacity), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .modifier(HoverHighlightModifier(cornerRadius: 14))
+            .liquidGlassSurface(cornerRadius: AppleUI.controlRadius, tint: tint, interactive: true)
+            .background((tint ?? Color.primary).opacity(feedback.fillOpacity), in: RoundedRectangle(cornerRadius: AppleUI.controlRadius, style: .continuous))
+            .modifier(HoverHighlightModifier(cornerRadius: AppleUI.controlRadius))
             .opacity(feedback.contentOpacity)
     }
 }
@@ -124,9 +127,9 @@ struct CompactGlassButtonStyle: ButtonStyle {
             .font(.subheadline.weight(.semibold))
             .padding(.horizontal, 12)
             .frame(minHeight: 36)
-            .liquidGlassSurface(cornerRadius: 13, tint: tint, interactive: true)
-            .background((tint ?? Color.primary).opacity(feedback.fillOpacity), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-            .modifier(HoverHighlightModifier(cornerRadius: 13))
+            .liquidGlassSurface(cornerRadius: AppleUI.controlRadius, tint: tint, interactive: true)
+            .background((tint ?? Color.primary).opacity(feedback.fillOpacity), in: RoundedRectangle(cornerRadius: AppleUI.controlRadius, style: .continuous))
+            .modifier(HoverHighlightModifier(cornerRadius: AppleUI.controlRadius))
             .opacity(feedback.contentOpacity)
     }
 }
@@ -242,7 +245,7 @@ struct PanelUtilityButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         let feedback = StableButtonPressFeedback(isPressed: configuration.isPressed)
-        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: AppleUI.controlRadius, style: .continuous)
         configuration.label
             .background {
                 shape.fill(reduceTransparency

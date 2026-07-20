@@ -47,7 +47,7 @@ struct SettingsNavigationBar: View {
                         .foregroundStyle(selection == section ? Color.primary : Color.secondary)
                         .background(
                             selection == section ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(.clear),
-                            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            in: RoundedRectangle(cornerRadius: AppleUI.iconRadius, style: .continuous)
                         )
                 }
                 .buttonStyle(.plain)
@@ -56,6 +56,6 @@ struct SettingsNavigationBar: View {
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 10)
-        .liquidGlassSurface(cornerRadius: 18)
+        .liquidGlassSurface(cornerRadius: AppleUI.cardRadius)
     }
 }

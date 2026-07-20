@@ -30,7 +30,7 @@ struct LoginView: View {
         }
         .padding(.horizontal, 18)
         .frame(minHeight: 72)
-        .liquidGlassSurface(cornerRadius: 20)
+        .liquidGlassSurface(cornerRadius: AppleUI.cardRadius)
         .padding(10)
     }
 }

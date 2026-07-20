@@ -1,5 +1,4 @@
 import AppKit
-import SwiftData
 import SwiftUI
 
 @main
@@ -11,7 +10,6 @@ struct CodexUsageMonitorApp: App {
         Window("Codex Usage", id: "dashboard") {
             DashboardView(monitor: container.monitoring, history: container.history)
                 .environment(container.webSession)
-                .modelContainer(container.history.container)
                 .frame(minWidth: 720, minHeight: 520)
         }
         .defaultSize(width: 960, height: 680)
@@ -26,14 +24,8 @@ struct CodexUsageMonitorApp: App {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        UserDefaults.standard.register(defaults: [
-            UsageMonitoringService.refreshIntervalPreferenceKey: AutoRefreshFrequency.defaultValue.rawValue,
-            "notificationsEnabled": false,
-            "notifyEvery20": true, "notifyReset": true,
-            LocalRealtimeTokenAuthorization.preferenceKey: false,
-            "retentionDays": 30
-        ])
-        NSApp.setActivationPolicy(UserDefaults.standard.bool(forKey: "showDockIcon") ? .regular : .accessory)
+        UserDefaults.standard.register(defaults: AppPreferences.registeredDefaults)
+        NSApp.setActivationPolicy(UserDefaults.standard.bool(forKey: AppPreferences.Key.showDockIcon) ? .regular : .accessory)
         Task { @MainActor in
             for window in NSApp.windows { window.isReleasedWhenClosed = false }
         }

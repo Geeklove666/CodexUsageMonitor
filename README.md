@@ -11,7 +11,7 @@
 > [!IMPORTANT]
 > 本项目是独立开发的非官方工具，与 OpenAI 无隶属、授权或背书关系。Codex、ChatGPT 及 OpenAI 是其各自权利人的商标。
 
-当前版本：**2.0.37（Build 69）**
+当前版本：**2.1.0（Build 71）**
 系统要求：**macOS 15 Sequoia 至 macOS 27 测试版**  
 架构：**Apple Silicon（arm64）**
 

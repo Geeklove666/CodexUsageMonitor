@@ -5,14 +5,14 @@ import SwiftUI
 struct DashboardView: View {
     @Bindable var monitor: UsageMonitoringService
     @State private var historyModel: DashboardHistoryModel
+    @State private var interactionModel = DashboardInteractionModel()
     @State private var selection: DashboardSection = .overview
     @State private var chartRange: UsageHistoryRange = .week
     @State private var showsPlanReference = false
-    @AppStorage(UsageMonitoringService.refreshIntervalPreferenceKey) private var autoRefreshSeconds = AutoRefreshFrequency.defaultValue.rawValue
-    @AppStorage("notificationsEnabled") private var notificationsEnabled = false
-    @AppStorage("notifyEvery20") private var notifyEvery20 = true
-    @AppStorage("notifyReset") private var notifyReset = true
-    @State private var notificationAuthorization: NotificationAuthorizationState = .unknown
+    @AppStorage(AppPreferences.Key.autoRefreshSeconds) private var autoRefreshSeconds = AutoRefreshFrequency.defaultValue.rawValue
+    @AppStorage(AppPreferences.Key.notificationsEnabled) private var notificationsEnabled = false
+    @AppStorage(AppPreferences.Key.notifyEvery20) private var notifyEvery20 = true
+    @AppStorage(AppPreferences.Key.notifyReset) private var notifyReset = true
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
     @Environment(WebViewSession.self) private var webSession
@@ -49,7 +49,7 @@ struct DashboardView: View {
         }
         .task {
             monitor.start()
-            notificationAuthorization = await NotificationService().authorizationState()
+            await interactionModel.loadNotificationAuthorization()
         }
         .task(id: "\(chartRange.rawValue)-\(monitor.historyRevision)") {
             historyModel.load(range: chartRange)
@@ -76,7 +76,7 @@ struct DashboardView: View {
                 .foregroundStyle(.secondary)
         }
         .padding(12)
-        .liquidGlassSurface(cornerRadius: 12)
+        .liquidGlassSurface(cornerRadius: AppleUI.cardRadius)
         .padding([.horizontal, .bottom], 10)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("数据状态，\(dashboardStatus.accessibilityText)")
@@ -87,11 +87,11 @@ struct DashboardView: View {
             HStack(alignment: .firstTextBaseline) {
                 headerCopy
                 Spacer(minLength: 24)
-                StatusBadge(status: dashboardStatus)
+                if dashboardStatus != .live { StatusBadge(status: dashboardStatus) }
             }
             VStack(alignment: .leading, spacing: 10) {
                 headerCopy
-                StatusBadge(status: dashboardStatus)
+                if dashboardStatus != .live { StatusBadge(status: dashboardStatus) }
             }
         }
     }
@@ -196,7 +196,7 @@ struct DashboardView: View {
                         symbol: "bell.badge.fill",
                         color: AppleUI.accent,
                         title: "额度通知",
-                        detail: notificationAuthorization.label
+                        detail: interactionModel.notificationAuthorization.label
                     ) {
                         Toggle("启用额度通知", isOn: notificationsBinding).labelsHidden()
                     }
@@ -320,10 +320,7 @@ struct DashboardView: View {
         } set: { enabled in
             if enabled {
                 Task {
-                    let service = NotificationService()
-                    let granted = (try? await service.requestAuthorization()) ?? false
-                    notificationAuthorization = await service.authorizationState()
-                    notificationsEnabled = granted
+                    notificationsEnabled = await interactionModel.setNotificationsEnabled(true)
                 }
             } else {
                 notificationsEnabled = false
@@ -332,15 +329,13 @@ struct DashboardView: View {
     }
 
     private var alertStatusMessage: String {
-        guard notificationsEnabled else { return "额度通知当前已关闭。" }
-        guard notificationAuthorization.canDeliver else { return "系统通知权限不可用，请在系统设置中允许通知。" }
-        return "通知规则已连接真实偏好设置，并依据真实额度变化触发。"
+        interactionModel.alertStatusMessage(notificationsEnabled: notificationsEnabled)
     }
 
     private var dashboardStatus: UsagePresentationState {
         UsagePresentationState(
             snapshot: monitor.snapshot,
-            lastError: monitor.lastError,
+            failure: monitor.lastFailure,
             isRefreshing: monitor.isRefreshing
         )
     }

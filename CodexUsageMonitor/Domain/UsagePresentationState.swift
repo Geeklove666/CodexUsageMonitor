@@ -11,16 +11,16 @@ enum UsagePresentationState: String, Sendable, Equatable {
     case unavailable
     case exhausted
 
-    init(snapshot: CodexUsageSnapshot, lastError: String?, isRefreshing: Bool) {
+    init(snapshot: CodexUsageSnapshot, failure: UsageFailure?, isRefreshing: Bool) {
         if isRefreshing {
             self = .loading
         } else if (snapshot.primaryWindow?.remainingPercentage ?? 1) <= 0,
                   snapshot.sourceKind != .unavailable {
             self = .exhausted
-        } else if let lastError, Self.looksOffline(lastError) {
+        } else if failure?.isOffline == true {
             self = snapshot.sourceKind == .unavailable ? .offline : .failed
         } else {
-            switch MonitoringStatus(snapshot: snapshot, lastError: lastError, isRefreshing: false) {
+            switch MonitoringStatus(snapshot: snapshot, failure: failure, isRefreshing: false) {
             case .refreshing: self = .loading
             case .live: self = .live
             case .cached: self = .cached
@@ -60,9 +60,4 @@ enum UsagePresentationState: String, Sendable, Equatable {
         }
     }
 
-    private static func looksOffline(_ message: String) -> Bool {
-        let normalized = message.lowercased()
-        return normalized.contains("网络") || normalized.contains("network")
-            || normalized.contains("offline") || normalized.contains("internet")
-    }
 }

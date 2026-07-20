@@ -26,6 +26,7 @@ struct UsageRing: View {
                 VStack(spacing: 1) {
                     Text(percentage.map { "\(isEstimated ? "≈" : "")\(Int($0))%" } ?? "--")
                         .font(valueFont.monospacedDigit().weight(.bold))
+                        .contentTransition(.numericText())
                     Text(subtitle).font(.caption2.weight(.medium)).foregroundStyle(.secondary)
                 }
             } else if warning && showsWarningGlyph {
@@ -54,7 +55,7 @@ struct CompactUsageSummary: View {
     let now: Date
 
     var body: some View {
-        AppleCard(padding: 12, cornerRadius: 16, material: nil) {
+        AppleCard(padding: 12, cornerRadius: AppleUI.cardRadius, material: nil) {
             HStack(spacing: 12) {
                 UsageRing(
                     percentage: snapshot.primaryWindow?.remainingPercentage,
@@ -120,6 +121,7 @@ private struct UsageMetricLine: View {
             Text(title).font(.caption).foregroundStyle(.secondary)
             Spacer(minLength: 8)
             Text(value).font(.subheadline.monospacedDigit().weight(.semibold))
+                .contentTransition(.numericText())
         }
         .padding(.vertical, 6)
         .accessibilityElement(children: .combine)
@@ -142,6 +144,7 @@ struct UsageProgressRow: View {
                 }
                 Spacer()
                 Text(remainingText).font(.subheadline.monospacedDigit().weight(.semibold))
+                    .contentTransition(.numericText())
                 Text(resetText).font(.caption).foregroundStyle(.secondary)
             }
             progressTrack
@@ -180,7 +183,7 @@ struct UsageProgressRow: View {
 
 struct MonitoringStatusBar: View {
     let snapshot: CodexUsageSnapshot
-    let lastError: String?
+    let failure: UsageFailure?
     let isRefreshing: Bool
 
     var body: some View {
@@ -206,12 +209,12 @@ struct MonitoringStatusBar: View {
         case .live: return "数据正常 · \(RelativeFormatter.text(snapshot.fetchedAt))"
         case .cached: return "缓存数据 · \(RelativeFormatter.text(snapshot.fetchedAt))"
         case .estimated: return "本地估算 · \(RelativeFormatter.text(snapshot.fetchedAt))"
-        case .offline: return lastError ?? "当前网络不可用 · 保留旧数据"
-        case .needsLogin: return lastError ?? "需要登录后读取额度"
+        case .offline: return failure?.userMessage ?? "当前网络不可用 · 保留旧数据"
+        case .needsLogin: return failure?.userMessage ?? "需要登录后读取额度"
         case .failed:
-            if let lastError { return "刷新失败：\(lastError) · 保留旧数据" }
+            if let failure { return "刷新失败：\(failure.userMessage) · 保留旧数据" }
             return "刷新失败 · 保留 \(RelativeFormatter.text(snapshot.fetchedAt)) 的数据"
-        case .unavailable: return lastError ?? "当前没有可用数据"
+        case .unavailable: return failure?.userMessage ?? "当前没有可用数据"
         case .exhausted: return "主额度已耗尽 · 等待重置"
         }
     }
@@ -221,7 +224,7 @@ struct MonitoringStatusBar: View {
     private var color: Color { presentationState.color }
 
     private var presentationState: UsagePresentationState {
-        UsagePresentationState(snapshot: snapshot, lastError: lastError, isRefreshing: isRefreshing)
+        UsagePresentationState(snapshot: snapshot, failure: failure, isRefreshing: isRefreshing)
     }
 }
 

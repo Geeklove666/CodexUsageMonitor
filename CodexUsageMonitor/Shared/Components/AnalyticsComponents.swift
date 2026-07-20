@@ -5,7 +5,7 @@ struct CompactAnalyticsSummary: View {
     var realtimeAuthorizationRequired = false
 
     var body: some View {
-        AppleCard(padding: 9, cornerRadius: 17, material: nil) {
+        AppleCard(padding: 9, cornerRadius: AppleUI.cardRadius, material: nil) {
             VStack(alignment: .leading, spacing: 7) {
                 HStack {
                     Label("今日 Token", systemImage: "chart.bar.fill")
@@ -56,7 +56,7 @@ struct CompactAnalyticsSummary: View {
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(.secondary)
                 .frame(width: 26, height: 26)
-                .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: AppleUI.iconRadius, style: .continuous))
             VStack(alignment: .leading, spacing: 2) {
                 Text(TokenMilestoneFormatter.todayMessage(tokens: tokens))
                     .font(.caption.weight(.semibold))

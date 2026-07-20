@@ -1,24 +1,19 @@
 import Foundation
 import Observation
-import OSLog
 
 @MainActor @Observable
 final class UsageMonitoringService {
-    static let refreshIntervalPreferenceKey = "autoRefreshSeconds"
-
-    private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "local.codex-usage-monitor", category: "monitoring")
+    private let logger = AppLogger(.monitoring)
     private let repository: any CodexUsageRepository
     private let realtimeTokenReader: any RealtimeTokenUsageReading
     private let snapshotPipeline: UsageSnapshotPipeline
     private let refreshPolicy = RefreshPolicy()
+    private let scheduler = RefreshScheduler()
     private let networkMonitor = NetworkMonitor()
-    private var loopTask: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
     private var activeRefreshForceRefresh = false
     private var refreshGeneration: UInt64 = 0
     private var analyticsTask: Task<Void, Never>?
-    private var resetBoundaryTask: Task<Void, Never>?
-    private var networkRestoreTask: Task<Void, Never>?
     private var failures = 0
     private var lastMenuOpenAt: Date?
     private var automaticRefreshSuspended = false
@@ -28,13 +23,13 @@ final class UsageMonitoringService {
         didSet { if oldValue != snapshot { displayStateDidChange?() } }
     }
     var isRefreshing = false
-    var lastError: String?
+    var lastFailure: UsageFailure?
     @ObservationIgnored var now = Date.now
     var historyRevision = 0
     var diagnostic = DataSourceDiagnostic()
     var persistenceWarning: String?
     var status: MonitoringStatus {
-        MonitoringStatus(snapshot: snapshot, lastError: lastError, isRefreshing: isRefreshing)
+        MonitoringStatus(snapshot: snapshot, failure: lastFailure, isRefreshing: isRefreshing)
     }
 
     init(repository: any CodexUsageRepository,
@@ -46,50 +41,45 @@ final class UsageMonitoringService {
         self.snapshotPipeline = snapshotPipeline
         snapshot = initialSnapshot
         networkMonitor.onRestored = { [weak self] in
-            Task { @MainActor in await self?.refreshAfterNetworkRestore() }
+            Task { @MainActor in self?.refreshAfterNetworkRestore() }
         }
     }
 
     func start() {
-        guard loopTask == nil else { return }
+        guard !scheduler.isAutomaticLoopRunning else { return }
         startLoop(refreshImmediately: true)
     }
 
     func restartRefreshLoop() {
-        loopTask?.cancel()
-        loopTask = nil
+        scheduler.stopAutomaticLoop()
         guard !automaticRefreshSuspended else { return }
         startLoop(refreshImmediately: false)
     }
 
     private func startLoop(refreshImmediately: Bool) {
-        loopTask = Task { [weak self] in
-            if refreshImmediately { await self?.refresh(reason: "启动刷新", forceRefresh: false) }
-            while !Task.isCancelled {
-                guard let self else { return }
-                self.now = .now
-                let defaults = UserDefaults.standard
-                let configured = defaults.object(forKey: Self.refreshIntervalPreferenceKey) as? Int
-                    ?? AutoRefreshFrequency.defaultValue.rawValue
-                let process = ProcessInfo.processInfo
-                let delay = refreshPolicy.automaticDelay(
-                    configuredSeconds: configured,
-                    failureCount: self.failures,
-                    lastMenuOpenAt: self.lastMenuOpenAt,
-                    now: self.now,
-                    isLowPowerModeEnabled: process.isLowPowerModeEnabled,
-                    hasThermalPressure: process.thermalState == .serious || process.thermalState == .critical,
-                    jitterFactor: Double.random(in: 0.95...1.05)
-                )
-                do {
-                    try await Task.sleep(for: .seconds(delay))
-                } catch {
-                    return
-                }
-                guard !Task.isCancelled else { return }
-                await self.refresh(reason: "自动刷新", forceRefresh: false)
+        scheduler.startAutomaticLoop(
+            refreshImmediately: refreshImmediately,
+            delayProvider: { [weak self] in self?.automaticRefreshDelay() ?? 600 },
+            refresh: { [weak self] reason in
+                await self?.refresh(reason: reason, forceRefresh: false)
             }
-        }
+        )
+    }
+
+    private func automaticRefreshDelay() -> TimeInterval {
+        now = .now
+        let configured = UserDefaults.standard.object(forKey: AppPreferences.Key.autoRefreshSeconds) as? Int
+            ?? AutoRefreshFrequency.defaultValue.rawValue
+        let process = ProcessInfo.processInfo
+        return refreshPolicy.automaticDelay(
+            configuredSeconds: configured,
+            failureCount: failures,
+            lastMenuOpenAt: lastMenuOpenAt,
+            now: now,
+            isLowPowerModeEnabled: process.isLowPowerModeEnabled,
+            hasThermalPressure: process.thermalState == .serious || process.thermalState == .critical,
+            jitterFactor: Double.random(in: 0.95...1.05)
+        )
     }
 
     func noteMenuOpened() {
@@ -106,30 +96,25 @@ final class UsageMonitoringService {
 
     func suspendAutomaticRefresh() {
         automaticRefreshSuspended = true
-        loopTask?.cancel()
-        resetBoundaryTask?.cancel()
-        networkRestoreTask?.cancel()
-        loopTask = nil
-        resetBoundaryTask = nil
-        networkRestoreTask = nil
+        scheduler.cancelAll()
     }
 
     func resumeAfterWake() {
         automaticRefreshSuspended = false
         now = .now
         displayStateDidChange?()
-        guard loopTask == nil else { return }
+        guard !scheduler.isAutomaticLoopRunning else { return }
         startLoop(refreshImmediately: false)
         Task { [weak self] in
             await self?.refresh(reason: "系统唤醒", forceRefresh: false)
         }
     }
 
-    func refreshIfStaleForMenuOpen(maxAge: TimeInterval = 120) async {
+    func refreshIfStaleForMenuOpen(maxAge: TimeInterval = AppConfiguration.Refresh.menuFreshnessLimit) async {
         noteMenuOpened()
         if refreshPolicy.shouldRefreshOnMenuOpen(
             snapshot: snapshot,
-            lastError: lastError,
+            hasFailure: lastFailure != nil,
             isRefreshing: isRefreshing,
             maxAge: maxAge,
             now: .now
@@ -151,6 +136,7 @@ final class UsageMonitoringService {
             }
         }
         isRefreshing = true
+        logger.debug("Refresh requested: \(reason), force=\(forceRefresh)")
         refreshGeneration &+= 1
         let generation = refreshGeneration
         activeRefreshForceRefresh = forceRefresh
@@ -166,13 +152,18 @@ final class UsageMonitoringService {
                 self.diagnostic = await self.repository.currentDiagnostic()
                 self.diagnostic.lastRefreshReason = reason
                 if quota.isCached || quota.isEstimated {
-                    self.lastError = self.diagnostic.lastFailure ?? "未能获取新额度，正在保留上次数据"
+                    let message = self.diagnostic.lastFailure ?? "未能获取新额度，正在保留上次数据"
+                    self.lastFailure = UsageFailure(
+                        kind: self.diagnostic.lastFailureKind ?? .unavailable,
+                        userMessage: message,
+                        diagnosticMessage: message
+                    )
                     self.failures += 1
-                    self.logger.warning("Quota refresh fell back to \(quota.sourceKind.rawValue, privacy: .public)")
+                    self.logger.warning("Quota refresh fell back to \(quota.sourceKind.rawValue)")
                 } else {
-                    self.lastError = nil
+                    self.lastFailure = nil
                     self.failures = 0
-                    self.logger.info("Quota refresh succeeded via \(quota.sourceKind.rawValue, privacy: .public)")
+                    self.logger.info("Quota refresh succeeded via \(quota.sourceKind.rawValue)")
                 }
                 self.applyPipelineResult(await self.snapshotPipeline.process(previous: previous, current: quota))
                 self.scheduleResetBoundaryRefresh(for: quota)
@@ -182,11 +173,12 @@ final class UsageMonitoringService {
                     self.snapshot = self.snapshot.mergingAnalytics(realtime)
                 }
                 self.failures += 1
-                let redacted = SensitiveDataRedactor().redact(error.localizedDescription)
-                let quotaError = redacted
-                self.lastError = self.snapshot.analytics?.todayTokens == nil
-                    ? quotaError : "\(quotaError)；今日 Token 保留上次结果"
-                self.logger.error("Usage refresh failed: \(redacted, privacy: .public)")
+                var failure = UsageFailure(error: error)
+                if self.snapshot.analytics?.todayTokens != nil {
+                    failure = failure.appendingUserContext("今日 Token 保留上次结果")
+                }
+                self.lastFailure = failure
+                self.logger.error("Usage refresh failed [\(failure.kind.rawValue)]: \(failure.diagnosticMessage)")
                 self.diagnostic = await self.repository.currentDiagnostic()
                 self.diagnostic.lastRefreshReason = reason
             }
@@ -223,21 +215,19 @@ final class UsageMonitoringService {
     }
 
     private func scheduleResetBoundaryRefresh(for snapshot: CodexUsageSnapshot) {
-        resetBoundaryTask?.cancel()
-        guard !snapshot.isCached, !snapshot.isEstimated else { return }
-        let now = Date.now
-        let resetDates = [snapshot.primaryWindow?.resetsAt, snapshot.secondaryWindow?.resetsAt]
+        guard !snapshot.isCached, !snapshot.isEstimated else {
+            scheduler.scheduleResetBoundary(at: nil, now: .now) {}
+            return
+        }
+        let current = Date.now
+        let nextReset = [snapshot.primaryWindow?.resetsAt, snapshot.secondaryWindow?.resetsAt]
             .compactMap { $0 }
-            .filter { $0 > now }
-        guard let nextReset = resetDates.min() else { return }
-        let delay = max(5, nextReset.timeIntervalSince(now) + 5)
-        resetBoundaryTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(delay))
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                self?.now = .now
-            }
-            await self?.refresh(reason: "额度重置边界", forceRefresh: false)
+            .filter { $0 > current }
+            .min()
+        scheduler.scheduleResetBoundary(at: nextReset, now: current) { [weak self] in
+            guard let self else { return }
+            self.now = .now
+            await self.refresh(reason: "额度重置边界", forceRefresh: false)
         }
     }
 
@@ -246,25 +236,20 @@ final class UsageMonitoringService {
         if let warning = result.persistenceWarning { persistenceWarning = warning }
     }
 
-    private func refreshAfterNetworkRestore() async {
+    private func refreshAfterNetworkRestore() {
         guard !automaticRefreshSuspended else { return }
-        networkRestoreTask?.cancel()
-        networkRestoreTask = Task { [weak self] in
-            do {
-                try await Task.sleep(for: .seconds(2))
-            } catch {
-                return
-            }
-            guard !Task.isCancelled, let self, !self.automaticRefreshSuspended else { return }
+        scheduler.scheduleNetworkRestore { [weak self] in
+            guard let self, !self.automaticRefreshSuspended else { return }
             await self.refresh(reason: "网络恢复", forceRefresh: false)
-            self.networkRestoreTask = nil
         }
-        await networkRestoreTask?.value
     }
 
     func cancel() {
-        loopTask?.cancel(); refreshTask?.cancel(); analyticsTask?.cancel(); resetBoundaryTask?.cancel(); networkRestoreTask?.cancel()
-        loopTask = nil; refreshTask = nil; analyticsTask = nil; resetBoundaryTask = nil; networkRestoreTask = nil
+        refreshTask?.cancel()
+        analyticsTask?.cancel()
+        scheduler.cancelAll()
+        refreshTask = nil
+        analyticsTask = nil
     }
 
 }

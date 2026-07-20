@@ -1,6 +1,16 @@
 import Foundation
 import SwiftData
 
+enum UsageHistoryStoreError: LocalizedError {
+    case unavailable
+
+    var errorDescription: String? { "历史存储当前不可用" }
+}
+
+extension UsageHistoryStoreError: UsageFailureClassifying {
+    var usageFailureKind: UsageFailureKind { .persistence }
+}
+
 @Model
 final class UsageSnapshotEntity {
     @Attribute(.unique) var id: UUID
@@ -43,15 +53,31 @@ final class UsageSnapshotEntity {
 
 @MainActor
 final class UsageHistoryStore: UsageHistoryReading, UsageHistoryWriting {
-    let container: ModelContainer
-    private var context: ModelContext { container.mainContext }
+    let container: ModelContainer?
+    var isAvailable: Bool { container != nil }
+
+    private var context: ModelContext {
+        get throws {
+            guard let container else { throw UsageHistoryStoreError.unavailable }
+            return container.mainContext
+        }
+    }
 
     init(inMemory: Bool = false) throws {
         let configuration = ModelConfiguration(isStoredInMemoryOnly: inMemory)
         container = try ModelContainer(for: UsageSnapshotEntity.self, configurations: configuration)
     }
 
+    private init(disabled: Void) {
+        container = nil
+    }
+
+    static func disabled() -> UsageHistoryStore {
+        UsageHistoryStore(disabled: ())
+    }
+
     func saveIfNeeded(_ snapshot: CodexUsageSnapshot, processActive: Bool) throws -> Bool {
+        let context = try context
         var descriptor = FetchDescriptor<UsageSnapshotEntity>(sortBy: [SortDescriptor(\.fetchedAt, order: .reverse)])
         descriptor.fetchLimit = 1
         let last = try context.fetch(descriptor).first
@@ -78,6 +104,7 @@ final class UsageHistoryStore: UsageHistoryReading, UsageHistoryWriting {
     }
 
     func points(since date: Date) throws -> [UsageSnapshotEntity] {
+        let context = try context
         let descriptor = FetchDescriptor<UsageSnapshotEntity>(predicate: #Predicate { $0.fetchedAt >= date }, sortBy: [SortDescriptor(\.fetchedAt)])
         return try context.fetch(descriptor)
     }
@@ -97,18 +124,21 @@ final class UsageHistoryStore: UsageHistoryReading, UsageHistoryWriting {
     }
 
     func recentSnapshots(limit: Int = 12) throws -> [CodexUsageSnapshot] {
+        let context = try context
         var descriptor = FetchDescriptor<UsageSnapshotEntity>(sortBy: [SortDescriptor(\.fetchedAt, order: .reverse)])
         descriptor.fetchLimit = max(1, limit)
         return try context.fetch(descriptor).reversed().compactMap { $0.restoredSnapshot }
     }
 
     func cleanup(retentionDays: Int) throws {
+        let context = try context
         let cutoff = Calendar.current.date(byAdding: .day, value: -retentionDays, to: .now) ?? .distantPast
         try context.delete(model: UsageSnapshotEntity.self, where: #Predicate { $0.fetchedAt < cutoff })
         try context.save()
     }
 
     func clear() throws {
+        let context = try context
         try context.delete(model: UsageSnapshotEntity.self)
         try context.save()
     }

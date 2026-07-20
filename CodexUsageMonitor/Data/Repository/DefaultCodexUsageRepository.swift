@@ -13,6 +13,7 @@ actor DefaultCodexUsageRepository: CodexUsageRepository {
     private let analyticsSources: [any CodexAnalyticsDataSource]
     private let cache: CachedSnapshotDataSource
     private let estimate: LocalEstimateDataSource
+    private let logger = AppLogger(.repository)
     private let requestTimeout: Duration
     private let analyticsTimeout: Duration
     private(set) var diagnostic = DataSourceDiagnostic()
@@ -22,8 +23,8 @@ actor DefaultCodexUsageRepository: CodexUsageRepository {
          analytics: (any CodexAnalyticsDataSource)? = nil,
          analyticsSources: [any CodexAnalyticsDataSource] = [],
          cache: CachedSnapshotDataSource, estimate: LocalEstimateDataSource,
-         requestTimeout: Duration = .seconds(20),
-         analyticsTimeout: Duration = .seconds(8)) {
+         requestTimeout: Duration = AppConfiguration.Refresh.requestTimeout,
+         analyticsTimeout: Duration = AppConfiguration.Refresh.analyticsTimeout) {
         self.official = official; self.localCodex = localCodex; self.web = web
         self.analyticsSources = analyticsSources.isEmpty ? analytics.map { [$0] } ?? [] : analyticsSources
         self.cache = cache; self.estimate = estimate
@@ -52,6 +53,12 @@ actor DefaultCodexUsageRepository: CodexUsageRepository {
             try Task.checkCancellation()
             let availability = await source.availability()
             guard case .available = availability else {
+                if case .authenticationRequired = availability {
+                    lastError = UsageMonitorError.authenticationRequired
+                    diagnostic.lastFailure = UsageMonitorError.authenticationRequired.localizedDescription
+                    diagnostic.lastFailureKind = .authentication
+                }
+                logger.debug("Skipped \(source.identifier): \(availability.diagnosticLabel)")
                 attempts.append(DataSourceAttemptDiagnostic(
                     sourceIdentifier: source.identifier,
                     sourceLabel: source.displayName,
@@ -82,6 +89,7 @@ actor DefaultCodexUsageRepository: CodexUsageRepository {
                 if !value.isCached && !value.isEstimated {
                     diagnostic.lastSuccess = .now
                     diagnostic.lastFailure = nil
+                    diagnostic.lastFailureKind = nil
                 }
                 diagnostic.requestDuration = duration
                 diagnostic.fieldCompleteness = value.fieldCompleteness
@@ -91,12 +99,16 @@ actor DefaultCodexUsageRepository: CodexUsageRepository {
                     await cache.update(value)
                     await estimate.record(value)
                 }
+                logger.debug("Source \(source.identifier) succeeded in \(duration)s")
                 return value
             } catch is CancellationError { throw UsageMonitorError.cancelled }
             catch {
                 lastError = error
-                let redacted = SensitiveDataRedactor().redact(error.localizedDescription)
+                let failure = UsageFailure(error: error)
+                let redacted = failure.diagnosticMessage
                 diagnostic.lastFailure = redacted
+                diagnostic.lastFailureKind = failure.kind
+                logger.warning("Source \(source.identifier) failed [\(failure.kind.rawValue)]: \(redacted)")
                 attempts.append(DataSourceAttemptDiagnostic(
                     sourceIdentifier: source.identifier,
                     sourceLabel: source.displayName,
@@ -117,7 +129,7 @@ actor DefaultCodexUsageRepository: CodexUsageRepository {
     func currentDiagnostic() async -> DataSourceDiagnostic { diagnostic }
 
     private func timeout(for source: any CodexUsageDataSource) -> Duration {
-        source.sourceKind == .localCodexSession ? .seconds(45) : requestTimeout
+        source.sourceKind == .localCodexSession ? AppConfiguration.Refresh.localCodexRequestTimeout : requestTimeout
     }
 
     private func invalidateRefreshCaches() async {

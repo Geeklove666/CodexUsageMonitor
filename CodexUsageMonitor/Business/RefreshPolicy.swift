@@ -1,8 +1,6 @@
 import Foundation
 
 struct RefreshPolicy: Sendable {
-    private static let failureBackoff: [TimeInterval] = [0, 60, 120, 300, 600, 1_800]
-
     func automaticDelay(
         configuredSeconds: Int,
         failureCount: Int,
@@ -19,19 +17,20 @@ struct RefreshPolicy: Sendable {
             isLowPowerModeEnabled: isLowPowerModeEnabled,
             hasThermalPressure: hasThermalPressure
         )
-        let backoff = Self.failureBackoff[min(max(failureCount, 0), Self.failureBackoff.count - 1)]
+        let backoffValues = AppConfiguration.Refresh.failureBackoff
+        let backoff = backoffValues[min(max(failureCount, 0), backoffValues.count - 1)]
         return max(base, backoff) * jitterFactor.clamped(to: 0.95...1.05)
     }
 
     func shouldRefreshOnMenuOpen(
         snapshot: CodexUsageSnapshot,
-        lastError: String?,
+        hasFailure: Bool,
         isRefreshing: Bool,
         maxAge: TimeInterval,
         now: Date
     ) -> Bool {
         guard !isRefreshing else { return false }
-        if snapshot.sourceKind == .unavailable || lastError != nil || snapshot.isCached || snapshot.isEstimated {
+        if snapshot.sourceKind == .unavailable || hasFailure || snapshot.isCached || snapshot.isEstimated {
             return true
         }
         return now.timeIntervalSince(snapshot.fetchedAt) > maxAge

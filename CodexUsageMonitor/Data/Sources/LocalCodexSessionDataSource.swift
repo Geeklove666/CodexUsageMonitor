@@ -3,8 +3,8 @@ import Foundation
 import Security
 
 enum LocalCodexSessionAuthorization {
-    static let preferenceKey = "reuseLocalCodexLogin"
-    static let allowCustomExecutableKey = "allowCustomCodexExecutable"
+    static let preferenceKey = AppPreferences.Key.reuseLocalCodexLogin
+    static let allowCustomExecutableKey = AppPreferences.Key.allowCustomCodexExecutable
 }
 
 enum LocalCodexLoginStatus: Equatable, Sendable {
@@ -39,6 +39,16 @@ enum LocalCodexSessionError: LocalizedError, Equatable, Sendable {
         case .invalidResponse: "本机 Codex 返回了无法识别的额度数据"
         case .serverFailure: "本机 Codex 数据服务暂时不可用"
         case .protocolFailure(let message): "本机 Codex 协议错误：\(message)"
+        }
+    }
+}
+
+extension LocalCodexSessionError: UsageFailureClassifying {
+    var usageFailureKind: UsageFailureKind {
+        switch self {
+        case .notAuthorized, .notChatGPTLogin, .openAIAuthRequired: .authentication
+        case .invalidResponse, .protocolFailure: .parsing
+        case .executableMissing, .serverFailure: .unavailable
         }
     }
 }
@@ -158,17 +168,20 @@ struct LocalCodexSessionDataSource: CodexUsageDataSource, CodexAnalyticsDataSour
     let usageParser: CodexAppServerAccountUsageParser
     let accountUsageCache: LocalAccountUsageCache
     let quotaCache: LocalQuotaSnapshotCache
+    let loginStatusCache: LocalCodexLoginStatusCache
 
     init(locator: CodexExecutableLocator = CodexExecutableLocator(),
          parser: CodexAppServerRateLimitParser = CodexAppServerRateLimitParser(),
          usageParser: CodexAppServerAccountUsageParser = CodexAppServerAccountUsageParser(),
          accountUsageCache: LocalAccountUsageCache = LocalAccountUsageCache(),
-         quotaCache: LocalQuotaSnapshotCache = LocalQuotaSnapshotCache()) {
+         quotaCache: LocalQuotaSnapshotCache = LocalQuotaSnapshotCache(),
+         loginStatusCache: LocalCodexLoginStatusCache = LocalCodexLoginStatusCache()) {
         self.locator = locator
         self.parser = parser
         self.usageParser = usageParser
         self.accountUsageCache = accountUsageCache
         self.quotaCache = quotaCache
+        self.loginStatusCache = loginStatusCache
     }
 
     func availability() async -> DataSourceAvailability {
@@ -176,7 +189,14 @@ struct LocalCodexSessionDataSource: CodexUsageDataSource, CodexAnalyticsDataSour
             return .unavailable("需要用户主动授权")
         }
         guard locator.locate() != nil else { return .unavailable("未找到本机 Codex 命令") }
-        guard case .loggedIn = await LocalCodexLoginProbe(locator: locator).status() else {
+        let status: LocalCodexLoginStatus
+        if let cached = await loginStatusCache.freshValue() {
+            status = cached
+        } else {
+            status = await LocalCodexLoginProbe(locator: locator).status()
+            await loginStatusCache.store(status)
+        }
+        guard case .loggedIn = status else {
             return .authenticationRequired
         }
         return .available
@@ -228,6 +248,7 @@ struct LocalCodexSessionDataSource: CodexUsageDataSource, CodexAnalyticsDataSour
     func invalidateRefreshCaches() async {
         await quotaCache.clear()
         await accountUsageCache.clear()
+        await loginStatusCache.clear()
     }
 }
 
@@ -263,7 +284,7 @@ actor LocalQuotaSnapshotCache {
     private var storedAt: Date?
     private let lifetime: TimeInterval
 
-    init(lifetime: TimeInterval = 45) { self.lifetime = lifetime }
+    init(lifetime: TimeInterval = AppConfiguration.Refresh.localQuotaCacheLifetime) { self.lifetime = lifetime }
 
     func freshValue(now: Date = .now) -> CodexUsageSnapshot? {
         guard let value, let storedAt, now.timeIntervalSince(storedAt) < lifetime else { return nil }
@@ -284,7 +305,7 @@ actor LocalQuotaSnapshotCache {
 actor LocalAccountUsageCache {
     private var value: Data?
     private var fetchedAt: Date?
-    private let lifetime: TimeInterval = 900
+    private let lifetime: TimeInterval = AppConfiguration.Refresh.localAnalyticsCacheLifetime
 
     func freshValue(now: Date = .now) -> Data? {
         guard let value, let fetchedAt, now.timeIntervalSince(fetchedAt) < lifetime else { return nil }
@@ -299,5 +320,30 @@ actor LocalAccountUsageCache {
     func clear() {
         value = nil
         fetchedAt = nil
+    }
+}
+
+actor LocalCodexLoginStatusCache {
+    private var value: LocalCodexLoginStatus?
+    private var checkedAt: Date?
+    private let lifetime: TimeInterval
+
+    init(lifetime: TimeInterval = AppConfiguration.Refresh.localLoginStatusCacheLifetime) {
+        self.lifetime = lifetime
+    }
+
+    func freshValue(now: Date = .now) -> LocalCodexLoginStatus? {
+        guard let value, let checkedAt, now.timeIntervalSince(checkedAt) < lifetime else { return nil }
+        return value
+    }
+
+    func store(_ value: LocalCodexLoginStatus, now: Date = .now) {
+        self.value = value
+        checkedAt = now
+    }
+
+    func clear() {
+        value = nil
+        checkedAt = nil
     }
 }

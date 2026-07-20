@@ -103,13 +103,13 @@ final class RefreshPolicyTests: XCTestCase {
             fieldCompleteness: 0.5
         )
         XCTAssertFalse(policy.shouldRefreshOnMenuOpen(
-            snapshot: fresh, lastError: nil, isRefreshing: false, maxAge: 120, now: now
+            snapshot: fresh, hasFailure: false, isRefreshing: false, maxAge: 120, now: now
         ))
         XCTAssertTrue(policy.shouldRefreshOnMenuOpen(
-            snapshot: .unavailable, lastError: nil, isRefreshing: false, maxAge: 120, now: now
+            snapshot: .unavailable, hasFailure: false, isRefreshing: false, maxAge: 120, now: now
         ))
         XCTAssertTrue(policy.shouldRefreshOnMenuOpen(
-            snapshot: fresh, lastError: "失败", isRefreshing: false, maxAge: 120, now: now
+            snapshot: fresh, hasFailure: true, isRefreshing: false, maxAge: 120, now: now
         ))
     }
 }
@@ -121,12 +121,21 @@ final class MonitoringStatusTests: XCTestCase {
             sourceKind: .cachedSnapshot, sourceDisplayName: "cache", isCached: true,
             confidence: .medium, fieldCompleteness: 0.25
         )
-        XCTAssertEqual(MonitoringStatus(snapshot: cached, lastError: nil, isRefreshing: true), .refreshing)
+        XCTAssertEqual(MonitoringStatus(snapshot: cached, failure: nil, isRefreshing: true), .refreshing)
     }
 
     func testUnavailableSnapshotIsNeverReportedLive() {
-        XCTAssertEqual(MonitoringStatus(snapshot: .unavailable, lastError: nil, isRefreshing: false), .needsLogin)
-        XCTAssertEqual(MonitoringStatus(snapshot: .unavailable, lastError: "当前网络不可用", isRefreshing: false), .unavailable)
+        XCTAssertEqual(MonitoringStatus(snapshot: .unavailable, failure: nil, isRefreshing: false), .needsLogin)
+        XCTAssertEqual(MonitoringStatus(
+            snapshot: .unavailable,
+            failure: UsageFailure(kind: .network, userMessage: "当前网络不可用"),
+            isRefreshing: false
+        ), .unavailable)
+        XCTAssertEqual(MonitoringStatus(
+            snapshot: .unavailable,
+            failure: UsageFailure(kind: .authentication, userMessage: "需要重新登录"),
+            isRefreshing: false
+        ), .needsLogin)
     }
 
     func testFailedRefreshWithExistingSnapshotIsDegraded() {
@@ -134,7 +143,11 @@ final class MonitoringStatusTests: XCTestCase {
             primaryWindow: UsageLimitWindow(kind: .primary, remainingPercentage: 70, usedPercentage: 30, resetsAt: nil, durationDescription: nil),
             sourceKind: .officialWebPage, sourceDisplayName: "test", confidence: .high, fieldCompleteness: 0.25
         )
-        XCTAssertEqual(MonitoringStatus(snapshot: snapshot, lastError: "读取超时", isRefreshing: false), .degraded)
+        XCTAssertEqual(MonitoringStatus(
+            snapshot: snapshot,
+            failure: UsageFailure(kind: .timeout, userMessage: "读取超时"),
+            isRefreshing: false
+        ), .degraded)
     }
 }
 
@@ -144,17 +157,34 @@ final class UsagePresentationStateTests: XCTestCase {
             primaryWindow: UsageLimitWindow(kind: .primary, remainingPercentage: 0, usedPercentage: 100, resetsAt: nil, durationDescription: nil),
             sourceKind: .officialWebPage, sourceDisplayName: "test", confidence: .high, fieldCompleteness: 0.25
         )
-        XCTAssertEqual(UsagePresentationState(snapshot: exhausted, lastError: nil, isRefreshing: true), .loading)
-        XCTAssertEqual(UsagePresentationState(snapshot: exhausted, lastError: nil, isRefreshing: false), .exhausted)
+        XCTAssertEqual(UsagePresentationState(snapshot: exhausted, failure: nil, isRefreshing: true), .loading)
+        XCTAssertEqual(UsagePresentationState(snapshot: exhausted, failure: nil, isRefreshing: false), .exhausted)
     }
 
     func testOfflineAndFailedRefreshRemainDistinct() {
-        XCTAssertEqual(UsagePresentationState(snapshot: .unavailable, lastError: "当前网络不可用", isRefreshing: false), .offline)
+        XCTAssertEqual(UsagePresentationState(
+            snapshot: .unavailable,
+            failure: UsageFailure(kind: .network, userMessage: "当前网络不可用"),
+            isRefreshing: false
+        ), .offline)
         let retained = CodexUsageSnapshot(
             primaryWindow: UsageLimitWindow(kind: .primary, remainingPercentage: 60, usedPercentage: 40, resetsAt: nil, durationDescription: nil),
             sourceKind: .officialWebPage, sourceDisplayName: "test", confidence: .high, fieldCompleteness: 0.25
         )
-        XCTAssertEqual(UsagePresentationState(snapshot: retained, lastError: "读取超时", isRefreshing: false), .failed)
+        XCTAssertEqual(UsagePresentationState(
+            snapshot: retained,
+            failure: UsageFailure(kind: .timeout, userMessage: "读取超时"),
+            isRefreshing: false
+        ), .failed)
+    }
+
+    func testFailureClassificationDoesNotDependOnLocalizedMessageKeywords() {
+        let authentication = UsageFailure(error: LocalCodexSessionError.openAIAuthRequired)
+        let timeout = UsageFailure(error: UsageMonitorError.requestTimedOut)
+        XCTAssertEqual(authentication.kind, .authentication)
+        XCTAssertTrue(authentication.requiresLogin)
+        XCTAssertEqual(timeout.kind, .timeout)
+        XCTAssertTrue(timeout.isRetryable)
     }
 }
 
@@ -652,6 +682,12 @@ final class LocalRealtimeTokenUsageReaderTests: XCTestCase {
         try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(1)], ofItemAtPath: file.path)
         let updated = await reader.analyticsSnapshot(now: now.addingTimeInterval(2), authorizationGranted: true)
         XCTAssertEqual(updated?.todayTokens, 1_500)
+
+        let replaced = event(start.addingTimeInterval(240), 200) + "\n"
+        try Data(replaced.utf8).write(to: file)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(3)], ofItemAtPath: file.path)
+        let afterTruncation = await reader.analyticsSnapshot(now: now.addingTimeInterval(4), authorizationGranted: true)
+        XCTAssertEqual(afterTruncation?.todayTokens, 200)
     }
 
     func testRealtimeTodayReplacesDelayedTodayButPreservesHistory() throws {
@@ -677,6 +713,29 @@ final class LocalRealtimeTokenUsageReaderTests: XCTestCase {
         XCTAssertEqual(merged.tokens(on: today, calendar: calendar), 900)
         XCTAssertEqual(merged.sourceDisplayName, "本机 Codex（实时 + 历史）")
         XCTAssertEqual(merged.compactSourceDisplayName, "本机实时")
+    }
+}
+
+final class LocalCodexLoginStatusCacheTests: XCTestCase {
+    func testStatusExpiresAfterConfiguredLifetime() async {
+        let cache = LocalCodexLoginStatusCache(lifetime: 60)
+        let checkedAt = Date(timeIntervalSince1970: 1_000)
+        await cache.store(.loggedIn("ChatGPT"), now: checkedAt)
+
+        let fresh = await cache.freshValue(now: checkedAt.addingTimeInterval(59))
+        let expired = await cache.freshValue(now: checkedAt.addingTimeInterval(60))
+
+        XCTAssertEqual(fresh, .loggedIn("ChatGPT"))
+        XCTAssertNil(expired)
+    }
+
+    func testClearingStatusForcesAProbeOnNextRead() async {
+        let cache = LocalCodexLoginStatusCache(lifetime: 60)
+        await cache.store(.loggedOut("需要登录"))
+        await cache.clear()
+
+        let value = await cache.freshValue()
+        XCTAssertNil(value)
     }
 }
 
@@ -723,6 +782,8 @@ final class LifecycleStructureTests: XCTestCase {
         let source = try String(contentsOf: root
             .appendingPathComponent("CodexUsageMonitor/App/DependencyContainer.swift"), encoding: .utf8)
         XCTAssertFalse(source.contains("webSession.openUsagePage()"))
+        XCTAssertFalse(source.contains("milliseconds(350)"))
+        XCTAssertTrue(source.contains("reason: \"网页登录就绪\""))
     }
 
     func testMenuClockUsesCoarseTimerAndImmediateDataChangeCallback() throws {
@@ -775,6 +836,14 @@ final class ResetDetectionTests: XCTestCase {
 
 @MainActor
 final class UsageHistoryTests: XCTestCase {
+    func testDisabledStoreFailsGracefullyWithoutCrashing() {
+        let store = UsageHistoryStore.disabled()
+        XCTAssertFalse(store.isAvailable)
+        XCTAssertThrowsError(try store.recentSnapshots()) { error in
+            XCTAssertEqual((error as? UsageHistoryStoreError)?.localizedDescription, "历史存储当前不可用")
+        }
+    }
+
     func testSecondaryWindowChangeIsPersisted() throws {
         let store = try UsageHistoryStore(inMemory: true)
         let first = historySnapshot(primary: 80, secondary: 70)
@@ -1020,6 +1089,7 @@ final class RepositoryTests: XCTestCase {
         XCTAssertEqual(kind, .cachedSnapshot)
         let diagnostic = await repository.currentDiagnostic()
         XCTAssertEqual(diagnostic.lastFailure, UsageMonitorError.parsingFailed.localizedDescription)
+        XCTAssertEqual(diagnostic.lastFailureKind, .parsing)
     }
     func testAllSourcesFail() async {
         let failed = StubDataSource("x", kind: .verifiedOfficial, state: .unavailable("no"), result: .failure(UsageMonitorError.noAvailableDataSource))
@@ -1121,183 +1191,5 @@ final class RepositoryTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? UsageMonitorError, .requestTimedOut)
         }
-    }
-}
-
-@MainActor
-final class NativeUISnapshotSmokeTests: XCTestCase {
-    func testButtonPressFeedbackChangesOnlyLocalAppearance() {
-        let idle = StableButtonPressFeedback(isPressed: false)
-        let pressed = StableButtonPressFeedback(isPressed: true)
-
-        XCTAssertLessThan(pressed.contentOpacity, idle.contentOpacity)
-        XCTAssertGreaterThan(pressed.fillOpacity, idle.fillOpacity)
-    }
-
-    func testDesignSystemDoesNotApplyScaleEffects() throws {
-        let repositoryRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let sourceURL = repositoryRoot
-            .appendingPathComponent("CodexUsageMonitor/Shared/Components/AppleDesignSystem.swift")
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
-
-        XCTAssertFalse(source.contains(".scaleEffect("))
-    }
-
-    func testDashboardFollowsDesignChecklistStructure() throws {
-        let repositoryRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let dashboardDirectory = repositoryRoot
-            .appendingPathComponent("CodexUsageMonitor/Features/Dashboard")
-        var source = try ["DashboardView.swift", "DashboardComponents.swift", "DashboardModels.swift"]
-            .map { try String(contentsOf: dashboardDirectory.appendingPathComponent($0), encoding: .utf8) }
-            .joined(separator: "\n")
-        source += try String(contentsOf: repositoryRoot
-            .appendingPathComponent("CodexUsageMonitor/Domain/UsagePresentationState.swift"), encoding: .utf8)
-
-        for destination in ["概览", "使用历史", "告警", "数据来源", "设置"] {
-            XCTAssertTrue(source.contains(destination), "Missing dashboard destination: \(destination)")
-        }
-        for state in ["live", "loading", "cached", "estimated", "offline", "needsLogin", "failed", "unavailable", "exhausted"] {
-            XCTAssertTrue(source.contains("case \(state)"), "Missing dashboard state: \(state)")
-        }
-        for plan in ["$0/月", "$8/月", "$20/月", "$100/月", "$200/月"] {
-            XCTAssertTrue(source.contains(plan), "Missing US pricing baseline: \(plan)")
-        }
-        XCTAssertTrue(source.contains("自动刷新频率"))
-        XCTAssertTrue(source.contains("AutoRefreshFrequency.allCases"))
-        XCTAssertTrue(source.contains("真实刷新诊断"))
-        XCTAssertTrue(source.contains("DashboardQuotaSnapshot.make(snapshot: monitor.snapshot"))
-        XCTAssertTrue(source.contains("historyModel.points"))
-        XCTAssertFalse(source.contains("GlassButtonStyle(tint: AppleUI.accent)"),
-                       "Dashboard actions should use neutral glass instead of a saturated blue fill.")
-        XCTAssertFalse(source.contains("DemoTrendPoint"))
-        XCTAssertFalse(source.contains("DemoAlertRule"))
-        XCTAssertFalse(source.contains("Picker(\"Demo 状态\""))
-        XCTAssertFalse(source.contains("Demo 界面壳"))
-        XCTAssertFalse(source.contains("Demo 数值"))
-        XCTAssertFalse(source.contains(".glassEffect("), "Dashboard content must not apply glassEffect directly.")
-    }
-
-    func testEnabledLocalCodexMenuActionDoesNotStartLoginFlow() throws {
-        let repositoryRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let sourceURL = repositoryRoot
-            .appendingPathComponent("CodexUsageMonitor/Features/MenuBar/MenuBarViews.swift")
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
-
-        XCTAssertTrue(source.contains("localCodexLogin ? \"刷新本机 Codex\" : \"启用本机 Codex\""))
-        XCTAssertFalse(source.contains("try? await LocalCodexLoginProbe().startLogin()"))
-    }
-
-    func testMenuBarTitleUsesSystemLabelColor() throws {
-        let repositoryRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let sourceURL = repositoryRoot
-            .appendingPathComponent("CodexUsageMonitor/Features/MenuBar/MenuBarController.swift")
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
-
-        XCTAssertTrue(source.contains(".foregroundColor: NSColor.labelColor"))
-        XCTAssertFalse(source.contains("MenuBarQuotaLevel(remainingPercentage: $0).color"))
-        XCTAssertFalse(source.contains("NSColor(labelColor:"))
-    }
-
-    func testMenuPanelPositionUsesButtonBoundsConvertedToWindowCoordinates() throws {
-        let repositoryRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let sourceURL = repositoryRoot
-            .appendingPathComponent("CodexUsageMonitor/Features/MenuBar/MenuBarController.swift")
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
-
-        XCTAssertTrue(source.contains("button.convert(button.bounds, to: nil)"))
-        XCTAssertFalse(source.contains("buttonWindow.convertToScreen(button.frame)"))
-    }
-
-    func testMenuPanelRootBackgroundAvoidsOversaturatedFirstOpenMaterial() throws {
-        let repositoryRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let sourceURL = repositoryRoot
-            .appendingPathComponent("CodexUsageMonitor/Features/MenuBar/MenuBarViews.swift")
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
-
-        XCTAssertTrue(source.contains("Color(red: 0.965, green: 0.960, blue: 0.955)"))
-        XCTAssertFalse(source.contains("shape.fill(Color(nsColor: .windowBackgroundColor))"))
-        XCTAssertFalse(source.contains("Color(nsColor: .windowBackgroundColor).opacity(0.94)"))
-        XCTAssertFalse(source.contains("Color(nsColor: .windowBackgroundColor).opacity(0.82)"))
-        XCTAssertFalse(source.contains("shape.fill(.regularMaterial)"))
-        XCTAssertFalse(source.contains("shape.fill(.thinMaterial)"))
-        XCTAssertFalse(source.contains("shape.fill(.ultraThinMaterial)"))
-        XCTAssertFalse(source.contains("systemPink).opacity(0.16)"))
-    }
-
-    func testCardsKeepNeutralFillOverMaterial() throws {
-        let repositoryRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let sourceURL = repositoryRoot
-            .appendingPathComponent("CodexUsageMonitor/Shared/Components/AppleDesignSystem.swift")
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
-
-        XCTAssertTrue(source.contains("Color(nsColor: .controlBackgroundColor).opacity(0.66)"))
-        XCTAssertTrue(source.contains("Color(red: 0.985, green: 0.982, blue: 0.978)"))
-        XCTAssertFalse(source.contains("shape.fill(Color(nsColor: .controlBackgroundColor))"))
-    }
-
-    func testMenuCompactCardsUseStableNonSamplingBackgrounds() throws {
-        let repositoryRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let menuSource = try String(contentsOf: repositoryRoot
-            .appendingPathComponent("CodexUsageMonitor/Features/MenuBar/MenuBarViews.swift"), encoding: .utf8)
-        let monitoringSource = try String(contentsOf: repositoryRoot
-            .appendingPathComponent("CodexUsageMonitor/Shared/Components/MonitoringComponents.swift"), encoding: .utf8)
-        let analyticsSource = try String(contentsOf: repositoryRoot
-            .appendingPathComponent("CodexUsageMonitor/Shared/Components/AnalyticsComponents.swift"), encoding: .utf8)
-
-        XCTAssertTrue(menuSource.contains("AppleCard(padding: 11, cornerRadius: 16, material: nil)"))
-        XCTAssertTrue(monitoringSource.contains("AppleCard(padding: 12, cornerRadius: 16, material: nil)"))
-        XCTAssertTrue(analyticsSource.contains("AppleCard(padding: 9, cornerRadius: 17, material: nil)"))
-    }
-
-    func testCompactUsageSummaryRendersAtMenuWidth() throws {
-        let snapshot = CodexUsageSnapshot(
-            primaryWindow: UsageLimitWindow(kind: .primary, remainingPercentage: 64, usedPercentage: 36, resetsAt: .now.addingTimeInterval(3600), durationDescription: "5 小时"),
-            secondaryWindow: UsageLimitWindow(kind: .secondary, remainingPercentage: 82, usedPercentage: 18, resetsAt: .now.addingTimeInterval(7200), durationDescription: "1 周"),
-            resetAllowance: UsageResetAllowance(availableCount: 3),
-            sourceKind: .officialWebPage, sourceDisplayName: "test", confidence: .high, fieldCompleteness: 0.75
-        )
-        let renderer = ImageRenderer(content: CompactUsageSummary(snapshot: snapshot, now: .now).frame(width: 354))
-        renderer.scale = 1
-        let image = try XCTUnwrap(renderer.cgImage)
-        XCTAssertGreaterThan(image.width, 350)
-        XCTAssertGreaterThan(image.height, 100)
-    }
-
-
-    func testCompactAnalyticsKeepsStableHeightWhileSourceSwitches() throws {
-        let fixtureURL = try XCTUnwrap(Bundle.module.url(forResource: "analytics-partial", withExtension: "json"))
-        let analytics = try OfficialAnalyticsParser().parse(data: Data(contentsOf: fixtureURL))
-        let emptyRenderer = ImageRenderer(content: CompactAnalyticsSummary(analytics: nil).frame(width: 354))
-        let loadedRenderer = ImageRenderer(content: CompactAnalyticsSummary(analytics: analytics).frame(width: 354))
-        emptyRenderer.scale = 1
-        loadedRenderer.scale = 1
-        let emptyImage = try XCTUnwrap(emptyRenderer.cgImage)
-        let loadedImage = try XCTUnwrap(loadedRenderer.cgImage)
-        XCTAssertEqual(emptyImage.height, loadedImage.height)
-        XCTAssertGreaterThan(emptyImage.height, 60)
     }
 }

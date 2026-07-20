@@ -17,8 +17,12 @@ final class DashboardHistoryModel {
 
     func load(range: UsageHistoryRange, now: Date = .now) {
         do {
-            let samples = try history.usageSamples(since: range.startDate(relativeTo: now))
-            weeklySamples = try history.usageSamples(since: UsageHistoryRange.week.startDate(relativeTo: now))
+            let rangeStart = range.startDate(relativeTo: now)
+            let weekStart = UsageHistoryRange.week.startDate(relativeTo: now)
+            let samplesStart = min(rangeStart, weekStart)
+            let availableSamples = try history.usageSamples(since: samplesStart)
+            let samples = availableSamples.filter { $0.recordedAt >= rangeStart }
+            weeklySamples = availableSamples.filter { $0.recordedAt >= weekStart }
             points = UsageTrendBuilder.makePoints(from: samples, maxPoints: 240)
             velocity = UsageTrendBuilder.makeVelocity(from: samples, now: now)
             errorMessage = nil
