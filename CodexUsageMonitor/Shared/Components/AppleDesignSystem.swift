@@ -174,24 +174,41 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
                 .overlay {
                     shape.strokeBorder(Color(nsColor: .separatorColor).opacity(contrast == .increased ? 0.62 : 0.34), lineWidth: 1)
                 }
-        } else if #available(macOS 26.0, *) {
+        } else {
+            adaptiveSurface(content, shape: shape)
+        }
+    }
+
+#if compiler(>=6.2)
+    @ViewBuilder
+    private func adaptiveSurface(_ content: Content, shape: RoundedRectangle) -> some View {
+        if #available(macOS 26.0, *) {
             let glass = tint.map { Glass.regular.tint($0) } ?? Glass.regular
             content.glassEffect(interactive ? glass.interactive() : glass, in: shape)
         } else {
-            content
-                .background(.ultraThinMaterial, in: shape)
-                .overlay { shape.fill((tint ?? Color.primary).opacity(tint == nil ? 0.018 : 0.055)) }
-                .overlay {
-                    shape.strokeBorder(
-                        LinearGradient(
-                            colors: [.white.opacity(0.18), .primary.opacity(0.065)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 0.75
-                    )
-                }
+            materialSurface(content, shape: shape)
         }
+    }
+#else
+    private func adaptiveSurface(_ content: Content, shape: RoundedRectangle) -> some View {
+        materialSurface(content, shape: shape)
+    }
+#endif
+
+    private func materialSurface(_ content: Content, shape: RoundedRectangle) -> some View {
+        content
+            .background(.ultraThinMaterial, in: shape)
+            .overlay { shape.fill((tint ?? Color.primary).opacity(tint == nil ? 0.018 : 0.055)) }
+            .overlay {
+                shape.strokeBorder(
+                    LinearGradient(
+                        colors: [.white.opacity(0.18), .primary.opacity(0.065)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.75
+                )
+            }
     }
 
     private var stableFill: Color {

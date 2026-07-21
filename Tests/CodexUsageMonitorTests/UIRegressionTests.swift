@@ -22,6 +22,8 @@ final class NativeUISnapshotSmokeTests: XCTestCase {
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
         XCTAssertFalse(source.contains(".scaleEffect("))
+        XCTAssertTrue(source.contains("#if compiler(>=6.2)"),
+                      "Liquid Glass APIs must remain compilable with the Xcode 16.4 CI toolchain.")
     }
 
     func testDashboardFollowsDesignChecklistStructure() throws {
