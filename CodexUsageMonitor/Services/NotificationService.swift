@@ -20,11 +20,13 @@ actor NotificationService {
     private let defaults = UserDefaults.standard
 
     func requestAuthorization() async throws -> Bool {
-        try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
+        guard Self.canAccessSystemNotificationCenter else { return false }
+        return try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
     }
 
     func authorizationState() async -> NotificationAuthorizationState {
-        await withCheckedContinuation { continuation in
+        guard Self.canAccessSystemNotificationCenter else { return .unknown }
+        return await withCheckedContinuation { continuation in
             UNUserNotificationCenter.current().getNotificationSettings { settings in
                 let state: NotificationAuthorizationState = switch settings.authorizationStatus {
                 case .notDetermined: .notDetermined
@@ -39,8 +41,12 @@ actor NotificationService {
         }
     }
 
+    private static var canAccessSystemNotificationCenter: Bool {
+        Bundle.main.bundleURL.pathExtension == "app" && Bundle.main.bundleIdentifier != nil
+    }
+
     func evaluate(previous: CodexUsageSnapshot?, current: CodexUsageSnapshot, reset: Bool) async {
-        guard defaults.bool(forKey: "notificationsEnabled"),
+        guard defaults.bool(forKey: AppPreferences.Key.notificationsEnabled),
               await authorizationState().canDeliver,
               let remaining = current.primaryWindow?.remainingPercentage else { return }
         let cycle = cycleIdentifier(current, reset: reset)
@@ -48,7 +54,7 @@ actor NotificationService {
         let currentStep = ConsumptionMilestonePolicy.step(remainingPercentage: remaining)
         let stateKey = "consumption.step.\(cycle)"
 
-        if defaults.bool(forKey: "notifyEvery20") {
+        if defaults.bool(forKey: AppPreferences.Key.notifyEvery20) {
             let previousStep: Int?
             if defaults.object(forKey: stateKey) != nil {
                 previousStep = defaults.integer(forKey: stateKey)
@@ -75,7 +81,7 @@ actor NotificationService {
             defaults.set(reset ? currentStep : max(previousStep ?? currentStep, currentStep), forKey: stateKey)
         }
 
-        if reset && defaults.bool(forKey: "notifyReset") {
+        if reset && defaults.bool(forKey: AppPreferences.Key.notifyReset) {
             defaults.set(currentStep, forKey: stateKey)
             let content = UNMutableNotificationContent(); content.title = "Codex 额度已经重置"; content.body = "已检测到额度周期恢复。"; content.sound = .default
             try? await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "reset.\(cycle)", content: content, trigger: nil))

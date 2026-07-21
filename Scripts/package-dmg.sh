@@ -41,7 +41,11 @@ fi
 DMG_PATH="$DIST_DIR/$DMG_NAME"
 
 echo "Building Apple Silicon release for macOS 15+..."
-swift build -c release --arch arm64 --jobs "${BUILD_JOBS:-2}"
+if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
+  swift build -c release --arch arm64 --jobs "${BUILD_JOBS:-2}"
+else
+  echo "Using existing release products (SKIP_BUILD=1)."
+fi
 
 if [[ ! -x "$EXECUTABLE" || ! -d "$RESOURCE_BUNDLE" ]]; then
   echo "Release products are incomplete." >&2

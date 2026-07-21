@@ -24,13 +24,25 @@ enum OfficialPageConfiguration {
 @MainActor
 @Observable
 final class WebViewSession: NSObject, WKNavigationDelegate {
-    let webView: WKWebView
+    @ObservationIgnored private var retainedWebView: WKWebView?
+    @ObservationIgnored private var hasStartedNavigation = false
     private(set) var lastError: String?
     private(set) var hasLoadedUsagePage = false
     private(set) var currentPagePath = "尚未加载"
     var onPageReady: (() -> Void)?
 
+    var webView: WKWebView {
+        if let retainedWebView { return retainedWebView }
+        let value = makeWebView()
+        retainedWebView = value
+        return value
+    }
+
     override init() {
+        super.init()
+    }
+
+    private func makeWebView() -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
         configuration.preferences.isElementFullscreenEnabled = false
@@ -39,16 +51,22 @@ final class WebViewSession: NSObject, WKNavigationDelegate {
             injectionTime: .atDocumentStart,
             forMainFrameOnly: true
         ))
-        webView = WKWebView(frame: .zero, configuration: configuration)
-        super.init()
-        webView.navigationDelegate = self
+        let value = WKWebView(frame: .zero, configuration: configuration)
+        value.navigationDelegate = self
+        return value
     }
 
-    func openUsagePage() {
+    func openUsagePage(forceReload: Bool = false) {
+        guard forceReload || !hasStartedNavigation else { return }
+        hasStartedNavigation = true
         lastError = nil
         // Analytics also has same-origin access to the quota endpoint and loads the
         // additional first-party monitoring responses required by the dashboard.
         webView.load(URLRequest(url: OfficialPageConfiguration.analyticsURL, cachePolicy: .reloadRevalidatingCacheData))
+    }
+
+    func prepareForBackgroundFallback() {
+        openUsagePage()
     }
 
     func usageJSON() async throws -> Data {
@@ -185,9 +203,10 @@ final class WebViewSession: NSObject, WKNavigationDelegate {
     func clearLoginState() async {
         let types = WKWebsiteDataStore.allWebsiteDataTypes()
         await withCheckedContinuation { continuation in
-            webView.configuration.websiteDataStore.removeData(ofTypes: types, modifiedSince: .distantPast) { continuation.resume() }
+            WKWebsiteDataStore.default().removeData(ofTypes: types, modifiedSince: .distantPast) { continuation.resume() }
         }
         hasLoadedUsagePage = false
+        hasStartedNavigation = false
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
@@ -229,9 +248,12 @@ struct OfficialWebViewDataSource: CodexUsageDataSource, CodexAnalyticsDataSource
 
     func availability() async -> DataSourceAvailability {
         let loaded = await session.hasLoadedUsagePage
+        if !loaded { await session.prepareForBackgroundFallback() }
         return loaded ? .available : .authenticationRequired
     }
-    func analyticsAvailability() async -> DataSourceAvailability { await availability() }
+    func analyticsAvailability() async -> DataSourceAvailability {
+        await session.hasLoadedUsagePage ? .available : .authenticationRequired
+    }
 
     func fetchAnalytics() async throws -> CodexAnalyticsSnapshot {
         let data = try await session.analyticsJSON()

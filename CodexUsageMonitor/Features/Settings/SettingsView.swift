@@ -6,32 +6,28 @@ struct SettingsView: View {
     let monitor: UsageMonitoringService
     @Environment(WebViewSession.self) private var session
     @Environment(\.openWindow) private var openWindow
-    @AppStorage("showDockIcon") private var showDockIcon = false
-    @AppStorage(UsageMonitoringService.refreshIntervalPreferenceKey) private var autoRefreshSeconds = AutoRefreshFrequency.defaultValue.rawValue
-    @AppStorage("notificationsEnabled") private var notifications = false
-    @AppStorage("retentionDays") private var retentionDays = 30
-    @AppStorage("debugMode") private var debugMode = false
-    @AppStorage("notifyEvery20") private var notifyEvery20 = true
-    @AppStorage("notifyReset") private var notifyReset = true
+    @AppStorage(AppPreferences.Key.showDockIcon) private var showDockIcon = false
+    @AppStorage(AppPreferences.Key.autoRefreshSeconds) private var autoRefreshSeconds = AutoRefreshFrequency.defaultValue.rawValue
+    @AppStorage(AppPreferences.Key.notificationsEnabled) private var notifications = false
+    @AppStorage(AppPreferences.Key.retentionDays) private var retentionDays = AppConfiguration.Persistence.defaultRetentionDays
+    @AppStorage(AppPreferences.Key.debugMode) private var debugMode = false
+    @AppStorage(AppPreferences.Key.notifyEvery20) private var notifyEvery20 = true
+    @AppStorage(AppPreferences.Key.notifyReset) private var notifyReset = true
     @AppStorage(LocalCodexSessionAuthorization.preferenceKey) private var localCodexLogin = false
     @AppStorage(LocalRealtimeTokenAuthorization.preferenceKey) private var localRealtimeTokenUsage = false
-    @State private var message: String?
+    @State private var model = SettingsModel()
     @State private var selection: SettingsSection = .general
     @State private var showsLocalCodexConsent = false
     @State private var showsRealtimeTokenConsent = false
     @State private var showsClearAllConfirmation = false
-    @State private var notificationAuthorization: NotificationAuthorizationState = .unknown
-    @State private var launchAtLoginState: LaunchAtLoginService.State = .disabled
-    @State private var launchAtLoginError: String?
-    @State private var localCodexStatus: LocalCodexLoginStatus = .unavailable("尚未检查")
 
     var body: some View {
         ZStack {
             AppBackground()
             VStack(spacing: 0) {
-                settingsNavigation
+                SettingsNavigationBar(selection: $selection)
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: AppleUI.spacingL) {
                         SectionHeading(title: selection.title, subtitle: selection.subtitle)
                         Group {
                             switch selection {
@@ -42,7 +38,7 @@ struct SettingsView: View {
                             }
                         }
                     }
-                    .padding(24)
+                    .padding(AppleUI.contentPadding)
                     .frame(maxWidth: 720)
                     .frame(maxWidth: .infinity)
                 }
@@ -56,13 +52,13 @@ struct SettingsView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("应用只扫描 ~/.codex/sessions 中结构化的 token_count 事件及时间戳，用于计算这台 Mac 今天的 Token 消耗；不会提取或保存提示词、代码、工具输出、文件路径或消息正文。可随时在此撤销授权。")
+            Text("应用只扫描 ~/.codex/sessions 中最近 7 天结构化的 token_count 事件及时间戳，用于计算这台 Mac 每天的 Token 消耗；不会提取或保存提示词、代码、工具输出、文件路径或消息正文。可随时在此撤销授权。")
         }
         .alert("允许使用本机 Codex 登录读取额度？", isPresented: $showsLocalCodexConsent) {
             Button("授权并刷新") {
                 localCodexLogin = true
                 Task {
-                    await refreshLocalCodexStatus()
+                    await model.refreshLocalCodexStatus()
                     await monitor.refresh()
                 }
             }
@@ -76,7 +72,7 @@ struct SettingsView: View {
                     await session.clearLoginState()
                     try? history.clear()
                     clearOrdinarySettings()
-                    message = "本地数据与数据源授权已清除"
+                    model.message = "本地数据与数据源授权已清除"
                 }
             }
             Button("取消", role: .cancel) {}
@@ -84,33 +80,11 @@ struct SettingsView: View {
             Text("这会清除历史、OpenAI 网页登录状态、本机 Codex 授权与实时 Token 授权。下次刷新需要重新登录或重新授权。")
         }
         .task {
-            notificationAuthorization = await NotificationService().authorizationState()
-            refreshLaunchAtLoginState()
-            await refreshLocalCodexStatus()
+            await model.load()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            refreshLaunchAtLoginState()
+            model.refreshLaunchAtLoginState()
         }
-    }
-
-    private var settingsNavigation: some View {
-        HStack(spacing: 6) {
-            ForEach(SettingsSection.allCases) { section in
-                Button { selection = section } label: {
-                    Label(section.title, systemImage: section.symbol)
-                        .font(.subheadline.weight(selection == section ? .semibold : .regular))
-                        .padding(.horizontal, 13)
-                        .frame(height: 34)
-                        .foregroundStyle(selection == section ? Color.primary : Color.secondary)
-                        .background(selection == section ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                }
-                .buttonStyle(.plain)
-            }
-            Spacer()
-        }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 10)
-        .liquidGlassSurface(cornerRadius: 18)
     }
 
     private var generalSettings: some View {
@@ -137,13 +111,13 @@ struct SettingsView: View {
                     Toggle("", isOn: launchAtLoginBinding).labelsHidden()
                         .help("在登录 Mac 后自动启动 Codex Usage Monitor")
                 }
-                if launchAtLoginState == .requiresApproval || launchAtLoginState == .unavailable || launchAtLoginError != nil {
+                if model.launchAtLoginState == .requiresApproval || model.launchAtLoginState == .unavailable || model.launchAtLoginError != nil {
                     HStack(spacing: 8) {
-                        Label(launchAtLoginError ?? launchAtLoginState.message, systemImage: launchAtLoginState.symbol)
+                        Label(model.launchAtLoginError ?? model.launchAtLoginState.message, systemImage: model.launchAtLoginState.symbol)
                             .font(.caption)
                             .foregroundStyle(AppleUI.warning)
                         Spacer()
-                        if launchAtLoginState == .requiresApproval {
+                        if model.launchAtLoginState == .requiresApproval {
                             Button("打开登录项设置") { LaunchAtLoginService().openSystemSettings() }
                                 .buttonStyle(.link)
                                 .help("在系统设置中允许 Codex Usage Monitor 登录项")
@@ -160,7 +134,7 @@ struct SettingsView: View {
                     .labelsHidden().frame(width: 110)
                 }
                 rowDivider
-                SettingsRow(symbol: "ladybug.fill", color: AppleUI.purple, title: "调试模式", detail: "日志始终进行敏感信息脱敏") {
+                SettingsRow(symbol: "ladybug.fill", color: AppleUI.purple, title: "调试模式", detail: "记录额外刷新流程；所有日志均经过敏感信息脱敏") {
                     Toggle("", isOn: $debugMode).labelsHidden()
                 }
             }
@@ -174,19 +148,17 @@ struct SettingsView: View {
                     Toggle("", isOn: $notifications).labelsHidden().onChange(of: notifications) { _, enabled in
                         if enabled {
                             Task {
-                                let service = NotificationService()
-                                let granted = (try? await service.requestAuthorization()) ?? false
-                                notificationAuthorization = await service.authorizationState()
+                                let granted = await model.requestNotificationAuthorization()
                                 if !granted { notifications = false }
                             }
                         }
                     }
                 }
             }
-            Label(notificationAuthorization.label,
-                  systemImage: notificationAuthorization.canDeliver ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+            Label(model.notificationAuthorization.label,
+                  systemImage: model.notificationAuthorization.canDeliver ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                 .font(.caption)
-                .foregroundStyle(notificationAuthorization.canDeliver ? AppleUI.success : AppleUI.warning)
+                .foregroundStyle(model.notificationAuthorization.canDeliver ? AppleUI.success : AppleUI.warning)
                 .frame(maxWidth: .infinity, alignment: .leading)
             AppleCard {
                 VStack(spacing: 0) {
@@ -219,10 +191,10 @@ struct SettingsView: View {
 
                     Divider().opacity(0.28).padding(.vertical, 13)
 
-                    Label(localCodexStatus.label, systemImage: localCodexStatusSymbol)
+                    Label(model.localCodexStatus.label, systemImage: localCodexStatusSymbol)
                         .font(.subheadline)
                         .foregroundStyle(localCodexStatusColor)
-                        .accessibilityLabel(localCodexStatus.label)
+                        .accessibilityLabel(model.localCodexStatus.label)
 
                     Divider().opacity(0.28).padding(.vertical, 13)
 
@@ -261,7 +233,7 @@ struct SettingsView: View {
                     Divider().opacity(0.28).padding(.vertical, 13)
 
                     SettingsRow(symbol: "bolt.horizontal.circle.fill", color: AppleUI.accent,
-                                title: "本机实时今日 Token", detail: "仅汇总 Codex token_count 事件；不读取会话正文") {
+                                title: "本机每日 Token", detail: "汇总最近 7 天 Codex token_count 事件；不读取会话正文") {
                         Toggle("", isOn: realtimeTokenAuthorizationBinding).labelsHidden()
                             .help("授权或撤销本机实时 Token 统计")
                     }
@@ -291,17 +263,17 @@ struct SettingsView: View {
             AppleCard {
                 VStack(spacing: 12) {
                     privacyButton("清除网页登录状态", symbol: "person.crop.circle.badge.xmark", destructive: false) {
-                        Task { await session.clearLoginState(); message = "登录状态已清除" }
+                        Task { await session.clearLoginState(); model.message = "登录状态已清除" }
                     }
                     privacyButton("清除历史记录", symbol: "clock.badge.xmark", destructive: true) {
-                        do { try history.clear(); message = "历史已清除" } catch { message = "清除失败" }
+                        do { try history.clear(); model.message = "历史已清除" } catch { model.message = "清除失败" }
                     }
                     privacyButton("清除全部本地数据", symbol: "trash.fill", destructive: true) {
                         showsClearAllConfirmation = true
                     }
                 }
             }
-            if let message {
+            if let message = model.message {
                 Label(message, systemImage: "checkmark.circle.fill")
                     .font(.subheadline).foregroundStyle(AppleUI.success)
                     .transition(.opacity)
@@ -313,21 +285,10 @@ struct SettingsView: View {
 
     private var launchAtLoginBinding: Binding<Bool> {
         Binding {
-            launchAtLoginState.isSelected
+            model.launchAtLoginState.isSelected
         } set: { enabled in
-            do {
-                try LaunchAtLoginService().setEnabled(enabled)
-                refreshLaunchAtLoginState()
-                launchAtLoginError = nil
-            } catch {
-                refreshLaunchAtLoginState()
-                launchAtLoginError = "自动启动设置失败：\(error.localizedDescription)"
-            }
+            model.setLaunchAtLogin(enabled)
         }
-    }
-
-    private func refreshLaunchAtLoginState() {
-        launchAtLoginState = LaunchAtLoginService().state
     }
 
     private var selectedRefreshFrequency: AutoRefreshFrequency {
@@ -365,7 +326,7 @@ struct SettingsView: View {
             } else {
                 localCodexLogin = false
                 Task {
-                    await refreshLocalCodexStatus()
+                    await model.refreshLocalCodexStatus()
                     await monitor.refresh()
                 }
             }
@@ -374,7 +335,7 @@ struct SettingsView: View {
 
     @ViewBuilder private var localCodexButtons: some View {
         Button {
-            Task { await refreshLocalCodexStatus() }
+            Task { await model.refreshLocalCodexStatus() }
         } label: {
             Label("检查登录状态", systemImage: "checkmark.shield")
                 .frame(maxWidth: .infinity)
@@ -382,15 +343,7 @@ struct SettingsView: View {
         .buttonStyle(GlassButtonStyle())
 
         Button {
-            Task {
-                do {
-                    try await LocalCodexLoginProbe().startLogin()
-                    message = "已打开 Codex 登录流程"
-                    await refreshLocalCodexStatus()
-                } catch {
-                    message = "无法打开 Codex 登录：\(SensitiveDataRedactor().redact(error.localizedDescription))"
-                }
-            }
+            Task { await model.startLocalCodexLogin() }
         } label: {
             Label("打开 Codex 登录", systemImage: "person.crop.circle")
                 .frame(maxWidth: .infinity)
@@ -398,12 +351,8 @@ struct SettingsView: View {
         .buttonStyle(GlassButtonStyle())
     }
 
-    private func refreshLocalCodexStatus() async {
-        localCodexStatus = await LocalCodexLoginProbe().status()
-    }
-
     private var localCodexStatusSymbol: String {
-        switch localCodexStatus {
+        switch model.localCodexStatus {
         case .loggedIn: "checkmark.shield.fill"
         case .loggedOut: "person.crop.circle.badge.exclamationmark"
         case .unavailable: "exclamationmark.triangle.fill"
@@ -411,7 +360,7 @@ struct SettingsView: View {
     }
 
     private var localCodexStatusColor: Color {
-        switch localCodexStatus {
+        switch model.localCodexStatus {
         case .loggedIn: AppleUI.success
         case .loggedOut, .unavailable: AppleUI.warning
         }
@@ -461,12 +410,4 @@ struct SettingsView: View {
             UserDefaults.standard.removeObject(forKey: key)
         }
     }
-}
-
-enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, dataSources, notifications, privacy
-    var id: Self { self }
-    var title: String { switch self { case .general: "常规"; case .dataSources: "数据源"; case .notifications: "通知"; case .privacy: "隐私" } }
-    var subtitle: String { switch self { case .general: "调整应用的基础行为"; case .dataSources: "选择额度读取方式并管理授权"; case .notifications: "只在重要状态变化时打扰你"; case .privacy: "管理保存在这台 Mac 上的数据" } }
-    var symbol: String { switch self { case .general: "gearshape.fill"; case .dataSources: "externaldrive.connected.to.line.below.fill"; case .notifications: "bell.fill"; case .privacy: "hand.raised.fill" } }
 }

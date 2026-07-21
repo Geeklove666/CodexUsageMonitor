@@ -148,18 +148,18 @@ enum DataSourceAvailability: Sendable, Equatable { case available, authenticatio
 enum MonitoringStatus: String, Sendable, Equatable {
     case refreshing, live, cached, estimated, needsLogin, degraded, unavailable
 
-    init(snapshot: CodexUsageSnapshot, lastError: String?, isRefreshing: Bool) {
+    init(snapshot: CodexUsageSnapshot, failure: UsageFailure?, isRefreshing: Bool) {
         if isRefreshing {
             self = .refreshing
         } else if snapshot.isCached {
-            self = lastError == nil ? .cached : .degraded
+            self = failure == nil ? .cached : .degraded
         } else if snapshot.isEstimated {
-            self = lastError == nil ? .estimated : .degraded
+            self = failure == nil ? .estimated : .degraded
         } else if snapshot.sourceKind != .unavailable {
-            self = lastError == nil ? .live : .degraded
-        } else if let lastError, lastError.contains("登录") {
+            self = failure == nil ? .live : .degraded
+        } else if failure?.requiresLogin == true {
             self = .needsLogin
-        } else if lastError != nil {
+        } else if failure != nil {
             self = .unavailable
         } else {
             self = .needsLogin
@@ -197,11 +197,25 @@ enum UsageMonitorError: LocalizedError, Sendable {
     }
 }
 
+extension UsageMonitorError: UsageFailureClassifying {
+    var usageFailureKind: UsageFailureKind {
+        switch self {
+        case .authenticationRequired, .authenticationExpired: .authentication
+        case .networkUnavailable: .network
+        case .requestTimedOut: .timeout
+        case .unsupportedResponse, .parsingFailed, .pageStructureChanged: .parsing
+        case .cancelled: .cancelled
+        case .noAvailableDataSource, .insufficientHistory, .staleData: .unavailable
+        }
+    }
+}
+
 struct DataSourceDiagnostic: Sendable {
     var activeIdentifier = "none"
     var analyticsIdentifier: String?
     var lastSuccess: Date?
     var lastFailure: String?
+    var lastFailureKind: UsageFailureKind?
     var lastAnalyticsFailure: String?
     var analyticsAvailability: [String: String] = [:]
     var analyticsFailures: [String: String] = [:]

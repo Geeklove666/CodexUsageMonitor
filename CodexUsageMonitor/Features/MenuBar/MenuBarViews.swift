@@ -54,7 +54,7 @@ struct MenuPanelView: View {
     @State private var showsRealtimeTokenConsent = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: AppleUI.spacingS) {
             header
             CompactUsageSummary(snapshot: monitor.snapshot, now: monitor.now)
             progressSection
@@ -65,11 +65,11 @@ struct MenuPanelView: View {
             statusSection
             actions
         }
-        .padding(12)
+        .padding(AppleUI.panelPadding)
         .frame(width: 360)
         .fixedSize(horizontal: false, vertical: true)
         .background { MenuPanelRootBackground().allowsHitTesting(false) }
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: AppleUI.panelRadius, style: .continuous))
         .background { MenuPanelHostWindowConfigurator().frame(width: 0, height: 0) }
         .containerBackground(.clear, for: .window)
         .task {
@@ -103,7 +103,7 @@ struct MenuPanelView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("只读取 ~/.codex/sessions 中 token_count 事件的时间戳和累计数值，用于计算这台 Mac 今天的 Token；不会提取消息正文。")
+            Text("只读取 ~/.codex/sessions 中最近 7 天 token_count 事件的时间戳和累计数值，用于计算这台 Mac 每天的 Token；不会提取消息正文。")
         }
     }
 
@@ -118,13 +118,12 @@ struct MenuPanelView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            ProgressView().controlSize(.small).opacity(monitor.isRefreshing ? 1 : 0).frame(width: 16)
             SourceBadge(snapshot: monitor.snapshot, compact: true)
         }
     }
 
     private var progressSection: some View {
-        AppleCard(padding: 11, cornerRadius: 16, shadowRadius: 8, shadowY: 2, material: nil) {
+        AppleCard(padding: 11, cornerRadius: AppleUI.cardRadius, material: nil) {
             VStack(spacing: 9) {
                 UsageProgressRow(title: "主额度", window: monitor.snapshot.primaryWindow, now: monitor.now,
                                  color: primaryQuotaColor, isEstimated: monitor.snapshot.isEstimated)
@@ -138,7 +137,7 @@ struct MenuPanelView: View {
     }
 
     private var statusSection: some View {
-        MonitoringStatusBar(snapshot: monitor.snapshot, lastError: monitor.lastError, isRefreshing: monitor.isRefreshing)
+        MonitoringStatusBar(snapshot: monitor.snapshot, failure: monitor.lastFailure, isRefreshing: monitor.isRefreshing)
     }
 
     private var actions: some View {
@@ -150,8 +149,9 @@ struct MenuPanelView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(CompactGlassButtonStyle())
-                .disabled(monitor.isRefreshing)
-                .help("同步刷新额度数据和今日 Token")
+            .disabled(monitor.isRefreshing)
+            .help("同步刷新额度数据和今日 Token")
+            .accessibilityValue(monitor.isRefreshing ? "正在刷新" : "可刷新")
 
                 Button {
                     showDashboard()
@@ -185,10 +185,10 @@ struct MenuPanelView: View {
                 }
             }
             .padding(4)
-            .liquidGlassSurface(cornerRadius: 18)
-            .background(Color(nsColor: .controlAccentColor).opacity(0.025), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .liquidGlassSurface(cornerRadius: AppleUI.cardRadius)
+            .background(Color(nsColor: .controlAccentColor).opacity(0.025), in: RoundedRectangle(cornerRadius: AppleUI.cardRadius, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                RoundedRectangle(cornerRadius: AppleUI.cardRadius, style: .continuous)
                     .strokeBorder(Color(nsColor: .separatorColor).opacity(0.16), lineWidth: 0.6)
             }
         }
@@ -215,13 +215,14 @@ struct MenuPanelView: View {
         .help(title)
     }
 
-    private var statusColor: Color {
-        switch monitor.status {
-        case .live: AppleUI.success
-        case .cached, .estimated: AppleUI.purple
-        case .refreshing: AppleUI.accent
-        case .needsLogin, .degraded, .unavailable: AppleUI.warning
-        }
+    private var statusColor: Color { presentationState.color }
+
+    private var presentationState: UsagePresentationState {
+        UsagePresentationState(
+            snapshot: monitor.snapshot,
+            failure: monitor.lastFailure,
+            isRefreshing: monitor.isRefreshing
+        )
     }
 
     private var primaryQuotaColor: Color {
@@ -272,7 +273,7 @@ private struct MenuPanelRootBackground: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 24, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: AppleUI.panelRadius, style: .continuous)
         ZStack {
             if reduceTransparency {
                 shape.fill(baseColor)

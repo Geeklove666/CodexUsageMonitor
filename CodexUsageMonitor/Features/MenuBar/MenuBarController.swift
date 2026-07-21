@@ -1,5 +1,4 @@
 import AppKit
-import SwiftData
 import SwiftUI
 
 @MainActor
@@ -14,6 +13,7 @@ final class MenuBarController: NSObject {
     private var settingsWindow: NSWindow?
     private var statusTimer: Timer?
     private var outsideClickMonitor: Any?
+    private var lastRenderedMenuDetail: String?
 
     init(monitor: UsageMonitoringService, history: UsageHistoryStore, webSession: WebViewSession) {
         self.monitor = monitor
@@ -23,6 +23,7 @@ final class MenuBarController: NSObject {
         super.init()
         configureStatusItem()
         startStatusUpdates()
+        monitor.displayStateDidChange = { [weak self] in self?.updateStatusTitle() }
     }
 
     private func configureStatusItem() {
@@ -31,26 +32,31 @@ final class MenuBarController: NSObject {
         button.action = #selector(togglePanel)
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         button.imagePosition = .noImage
-        updateStatusTitle()
+        updateStatusTitle(force: true)
     }
 
     private func startStatusUpdates() {
-        statusTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.updateStatusTitle() }
+        let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.monitor.updateClock() }
         }
+        RunLoop.main.add(timer, forMode: .common)
+        statusTimer = timer
     }
 
-    private func updateStatusTitle() {
+    private func updateStatusTitle(force: Bool = false) {
         guard let button = statusItem.button else { return }
+        let detail = menuDetail
+        guard force || detail != lastRenderedMenuDetail else { return }
+        lastRenderedMenuDetail = detail
         button.attributedTitle = NSAttributedString(
-            string: "Codex \(menuDetail)",
+            string: "Codex \(detail)",
             attributes: [
                 .font: NSFont.menuBarFont(ofSize: 0),
                 .foregroundColor: NSColor.labelColor
             ]
         )
         button.toolTip = "Codex Usage Monitor"
-        button.setAccessibilityLabel("Codex，\(menuDetail)")
+        button.setAccessibilityLabel("Codex，\(detail)")
     }
 
     private var menuDetail: String {
@@ -151,7 +157,6 @@ final class MenuBarController: NSObject {
                 size: NSSize(width: 960, height: 680),
                 content: DashboardView(monitor: monitor, history: history)
                     .environment(webSession)
-                    .modelContainer(history.container)
             )
         }
         show(dashboardWindow)

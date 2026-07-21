@@ -1,17 +1,28 @@
 import SwiftUI
 
 enum AppleUI {
-    static let smallRadius: CGFloat = 13
-    static let cardRadius: CGFloat = 12
-    static let heroRadius: CGFloat = 12
-    static let largeRadius: CGFloat = 16
+    static let spacingXS: CGFloat = 4
+    static let spacingS: CGFloat = 8
+    static let spacingM: CGFloat = 12
+    static let spacingL: CGFloat = 16
+    static let spacingXL: CGFloat = 24
+    static let contentPadding: CGFloat = 24
+    static let panelPadding: CGFloat = 12
+
+    static let iconRadius: CGFloat = 10
+    static let controlRadius: CGFloat = 13
+    static let cardRadius: CGFloat = 16
+    static let panelRadius: CGFloat = 24
+    static let smallRadius = controlRadius
+    static let heroRadius = cardRadius
+    static let largeRadius = cardRadius
     static let controlHeight: CGFloat = 42
 
-    static let accent = Color(red: 0.16, green: 0.46, blue: 0.96)
-    static let purple = Color(red: 0.48, green: 0.36, blue: 0.90)
-    static let success = Color(red: 0.20, green: 0.72, blue: 0.40)
-    static let warning = Color(red: 0.96, green: 0.58, blue: 0.18)
-    static let danger = Color(red: 0.95, green: 0.25, blue: 0.25)
+    static let accent = Color(nsColor: .controlAccentColor)
+    static let purple = Color(nsColor: .systemPurple)
+    static let success = Color(nsColor: .systemGreen)
+    static let warning = Color(nsColor: .systemOrange)
+    static let danger = Color(nsColor: .systemRed)
 }
 
 struct AppBackground: View {
@@ -26,8 +37,6 @@ struct AppBackground: View {
 struct AppleCard<Content: View>: View {
     var padding: CGFloat = 16
     var cornerRadius: CGFloat = AppleUI.cardRadius
-    var shadowRadius: CGFloat = 0
-    var shadowY: CGFloat = 0
     var material: Material? = .thinMaterial
     @ViewBuilder let content: Content
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -49,7 +58,7 @@ struct AppleCard<Content: View>: View {
                 }
             }
             .overlay {
-                shape.strokeBorder(Color(nsColor: .separatorColor).opacity(contrast == .increased ? 0.55 : 0.28),
+                shape.strokeBorder(Color(nsColor: .separatorColor).opacity(contrast == .increased ? 0.55 : 0.18),
                                    lineWidth: contrast == .increased ? 1 : 0.75)
             }
     }
@@ -66,7 +75,7 @@ struct SectionHeading: View {
     var subtitle: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: AppleUI.spacingXS) {
             Text(title).font(.title3.weight(.semibold))
             if let subtitle {
                 Text(subtitle).font(.subheadline).foregroundStyle(.secondary)
@@ -85,9 +94,9 @@ struct SymbolTile: View {
             .symbolRenderingMode(.hierarchical)
             .foregroundStyle(color)
             .frame(width: 30, height: 30)
-            .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: AppleUI.iconRadius, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: AppleUI.iconRadius, style: .continuous)
                     .strokeBorder(.white.opacity(0.12), lineWidth: 0.6)
             }
     }
@@ -102,8 +111,9 @@ struct GlassButtonStyle: ButtonStyle {
             .font(.subheadline.weight(.semibold))
             .padding(.horizontal, 15)
             .frame(minHeight: 38)
-            .liquidGlassSurface(cornerRadius: 14, tint: tint, interactive: true)
-            .background((tint ?? Color.primary).opacity(feedback.fillOpacity), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .liquidGlassSurface(cornerRadius: AppleUI.controlRadius, tint: tint, interactive: true)
+            .background((tint ?? Color.primary).opacity(feedback.fillOpacity), in: RoundedRectangle(cornerRadius: AppleUI.controlRadius, style: .continuous))
+            .modifier(HoverHighlightModifier(cornerRadius: AppleUI.controlRadius))
             .opacity(feedback.contentOpacity)
     }
 }
@@ -117,38 +127,132 @@ struct CompactGlassButtonStyle: ButtonStyle {
             .font(.subheadline.weight(.semibold))
             .padding(.horizontal, 12)
             .frame(minHeight: 36)
-            .liquidGlassSurface(cornerRadius: 13, tint: tint, interactive: true)
-            .background((tint ?? Color.primary).opacity(feedback.fillOpacity), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .liquidGlassSurface(cornerRadius: AppleUI.controlRadius, tint: tint, interactive: true)
+            .background((tint ?? Color.primary).opacity(feedback.fillOpacity), in: RoundedRectangle(cornerRadius: AppleUI.controlRadius, style: .continuous))
+            .modifier(HoverHighlightModifier(cornerRadius: AppleUI.controlRadius))
             .opacity(feedback.contentOpacity)
+    }
+}
+
+private struct HoverHighlightModifier: ViewModifier {
+    let cornerRadius: CGFloat
+    @State private var isHovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(Color.primary.opacity(isHovering ? 0.035 : 0))
+                    .allowsHitTesting(false)
+            }
+            .onHover { isHovering = $0 }
     }
 }
 
 extension View {
     /// Uses native Liquid Glass on macOS 26 and later, with a system-material
     /// fallback that preserves contrast and geometry on macOS 15.
-    @ViewBuilder
     func liquidGlassSurface(cornerRadius: CGFloat, tint: Color? = nil, interactive: Bool = false) -> some View {
+        modifier(LiquidGlassSurfaceModifier(cornerRadius: cornerRadius, tint: tint, interactive: interactive))
+    }
+}
+
+private struct LiquidGlassSurfaceModifier: ViewModifier {
+    let cornerRadius: CGFloat
+    let tint: Color?
+    let interactive: Bool
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        if reduceTransparency {
+            content
+                .background(stableFill, in: shape)
+                .overlay {
+                    shape.strokeBorder(Color(nsColor: .separatorColor).opacity(contrast == .increased ? 0.62 : 0.34), lineWidth: 1)
+                }
+        } else {
+            adaptiveSurface(content, shape: shape)
+        }
+    }
+
+#if compiler(>=6.2)
+    @ViewBuilder
+    private func adaptiveSurface(_ content: Content, shape: RoundedRectangle) -> some View {
         if #available(macOS 26.0, *) {
             let glass = tint.map { Glass.regular.tint($0) } ?? Glass.regular
-            self.glassEffect(
-                interactive ? glass.interactive() : glass,
-                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            )
+            content.glassEffect(interactive ? glass.interactive() : glass, in: shape)
         } else {
-            let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            self
-                .background(.ultraThinMaterial, in: shape)
-                .overlay { shape.fill((tint ?? Color.primary).opacity(tint == nil ? 0.018 : 0.055)) }
-                .overlay {
-                    shape.strokeBorder(
-                        LinearGradient(
-                            colors: [.white.opacity(0.18), .primary.opacity(0.065)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 0.75
-                    )
-                }
+            materialSurface(content, shape: shape)
+        }
+    }
+#else
+    private func adaptiveSurface(_ content: Content, shape: RoundedRectangle) -> some View {
+        materialSurface(content, shape: shape)
+    }
+#endif
+
+    private func materialSurface(_ content: Content, shape: RoundedRectangle) -> some View {
+        content
+            .background(.ultraThinMaterial, in: shape)
+            .overlay { shape.fill((tint ?? Color.primary).opacity(tint == nil ? 0.018 : 0.055)) }
+            .overlay {
+                shape.strokeBorder(
+                    LinearGradient(
+                        colors: [.white.opacity(0.18), .primary.opacity(0.065)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.75
+                )
+            }
+    }
+
+    private var stableFill: Color {
+        colorScheme == .dark
+            ? Color(red: 0.17, green: 0.17, blue: 0.18)
+            : Color(red: 0.96, green: 0.96, blue: 0.97)
+    }
+}
+
+extension UsagePresentationState {
+    var accessibilityText: String { label }
+
+    var symbol: String {
+        switch self {
+        case .loading: "arrow.triangle.2.circlepath"
+        case .live: "checkmark.circle.fill"
+        case .cached: "externaldrive.fill.badge.checkmark"
+        case .estimated: "function"
+        case .offline: "wifi.slash"
+        case .needsLogin: "person.crop.circle.badge.exclamationmark"
+        case .failed: "exclamationmark.triangle.fill"
+        case .unavailable: "questionmark.folder"
+        case .exhausted: "xmark.octagon.fill"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .loading: AppleUI.accent
+        case .live: AppleUI.success
+        case .cached: .secondary
+        case .estimated: AppleUI.purple
+        case .offline, .needsLogin, .failed: AppleUI.warning
+        case .unavailable: .secondary
+        case .exhausted: AppleUI.danger
+        }
+    }
+
+    var progressColor: Color {
+        switch self {
+        case .estimated, .offline, .needsLogin, .failed: AppleUI.warning
+        case .unavailable: .secondary
+        case .exhausted: AppleUI.danger
+        default: AppleUI.accent
         }
     }
 }
@@ -158,7 +262,7 @@ struct PanelUtilityButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         let feedback = StableButtonPressFeedback(isPressed: configuration.isPressed)
-        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: AppleUI.controlRadius, style: .continuous)
         configuration.label
             .background {
                 shape.fill(reduceTransparency
@@ -192,7 +296,7 @@ struct SettingsRow<Control: View>: View {
     @ViewBuilder let control: Control
 
     var body: some View {
-        HStack(spacing: 13) {
+        HStack(spacing: AppleUI.spacingM) {
             SymbolTile(symbol: symbol, color: color)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.body)
