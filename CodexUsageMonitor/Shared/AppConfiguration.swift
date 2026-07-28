@@ -12,6 +12,7 @@ enum AppPreferences {
         static let reuseLocalCodexLogin = "reuseLocalCodexLogin"
         static let allowCustomCodexExecutable = "allowCustomCodexExecutable"
         static let localRealtimeTokenUsageEnabled = "localRealtimeTokenUsageEnabled"
+        static let localClaudeUsageEnabled = "localClaudeUsageEnabled"
     }
 
     @MainActor static let registeredDefaults: [String: Any] = [
@@ -24,7 +25,8 @@ enum AppPreferences {
         Key.debugMode: false,
         Key.reuseLocalCodexLogin: false,
         Key.allowCustomCodexExecutable: false,
-        Key.localRealtimeTokenUsageEnabled: false
+        Key.localRealtimeTokenUsageEnabled: false,
+        Key.localClaudeUsageEnabled: false
     ]
 }
 

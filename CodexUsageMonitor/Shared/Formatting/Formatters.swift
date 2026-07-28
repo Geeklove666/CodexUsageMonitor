@@ -93,24 +93,12 @@ enum CountFormatter {
     }
 }
 
-enum TokenMilestoneFormatter {
-    static let smallGoal: Int64 = 100_000_000
-
-    static func message(tokens: Int64) -> String {
-        let safeTokens = max(0, tokens)
-        if safeTokens >= smallGoal {
-            let completed = Double(safeTokens) / Double(smallGoal)
-            let value = completed.formatted(.number.precision(.fractionLength(0...2)))
-            return "目前已经花掉了 \(value) 个小目标"
-        }
-        return "距离花掉 1 个小目标（Token）还差 \(CountFormatter.compact(smallGoal - safeTokens))"
+enum CalculatedCreditsFormatter {
+    static func value(_ credits: Double) -> String {
+        credits.formatted(.number.precision(.fractionLength(0...2)))
     }
 
-    static func todayMessage(tokens: Int64) -> String {
-        let goals = Double(max(0, tokens)) / Double(smallGoal)
-        let value = goals.formatted(.number.precision(.fractionLength(0...2)))
-        return "今天已经花掉了 \(value) 个小目标"
+    static func labeled(_ credits: Double) -> String {
+        "\(value(credits)) Credits"
     }
-
-    static let explanation = "1 个小目标 = 1 亿 Token"
 }

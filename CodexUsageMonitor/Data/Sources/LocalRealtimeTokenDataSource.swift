@@ -25,7 +25,26 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
         let modifiedAt: Date
         let scannedOffset: UInt64
         let previousTotal: Int64?
-        let tokensByDay: [Date: Int64]
+        let previousInput: Int64?
+        let previousCachedInput: Int64?
+        let previousOutput: Int64?
+        let currentModel: String?
+        let currentServiceTier: String?
+        let tokensByDay: [Date: TokenTotals]
+    }
+
+    fileprivate struct TokenTotals: Sendable {
+        var processed: Int64 = 0
+        var cachedInput: Int64 = 0
+        var credits: Double = 0
+
+        var effective: Int64 { max(0, processed - cachedInput) }
+
+        mutating func add(processed: Int64, cachedInput: Int64, credits: Double = 0) {
+            self.processed += processed
+            self.cachedInput += min(processed, cachedInput)
+            self.credits += max(0, credits)
+        }
     }
 
     private struct RolloutEvent: Decodable {
@@ -35,6 +54,22 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
         struct Payload: Decodable {
             let type: String
             let info: Info?
+            let threadSettings: ThreadSettings?
+
+            enum CodingKeys: String, CodingKey {
+                case type, info
+                case threadSettings = "thread_settings"
+            }
+        }
+
+        struct ThreadSettings: Decodable {
+            let model: String?
+            let serviceTier: String?
+
+            enum CodingKeys: String, CodingKey {
+                case model
+                case serviceTier = "service_tier"
+            }
         }
 
         struct Info: Decodable {
@@ -45,7 +80,16 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
 
         struct TokenUsage: Decodable {
             let totalTokens: Int64
-            enum CodingKeys: String, CodingKey { case totalTokens = "total_tokens" }
+            let inputTokens: Int64?
+            let cachedInputTokens: Int64?
+            let outputTokens: Int64?
+
+            enum CodingKeys: String, CodingKey {
+                case totalTokens = "total_tokens"
+                case inputTokens = "input_tokens"
+                case cachedInputTokens = "cached_input_tokens"
+                case outputTokens = "output_tokens"
+            }
         }
     }
 
@@ -72,10 +116,14 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
 
     private static func snapshot(now: Date, rangeStart: Date,
                                  states: [URL: FileScanState]) -> CodexAnalyticsSnapshot? {
-        var tokensByDay: [Date: Int64] = [:]
+        var tokensByDay: [Date: TokenTotals] = [:]
         for state in states.values {
             for (date, tokens) in state.tokensByDay where date >= rangeStart {
-                tokensByDay[date, default: 0] += tokens
+                tokensByDay[date, default: TokenTotals()].add(
+                    processed: tokens.processed,
+                    cachedInput: tokens.cachedInput,
+                    credits: tokens.credits
+                )
             }
         }
         guard !tokensByDay.isEmpty else { return nil }
@@ -87,17 +135,23 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
             groupBy: "day",
             dailyActivity: tokensByDay.keys.sorted().map { date in
                 CodexDailyActivity(
-                    date: date, users: 0, threads: 0, turns: 0, credits: 0,
-                    uncachedInputTokens: 0, cachedInputTokens: 0, outputTokens: 0,
-                    totalTokens: tokensByDay[date] ?? 0, clients: [], models: []
+                    date: date, users: 0, threads: 0, turns: 0,
+                    credits: tokensByDay[date]?.credits ?? 0,
+                    uncachedInputTokens: tokensByDay[date]?.effective ?? 0,
+                    cachedInputTokens: tokensByDay[date]?.cachedInput ?? 0,
+                    outputTokens: 0,
+                    totalTokens: tokensByDay[date]?.processed ?? 0, clients: [], models: []
                 )
             },
             dailyProductUsage: [], topSkills: [], topPlugins: [], creditEventCount: nil,
             availableSections: [.tokenUsage], lifetimeTokens: nil, peakDailyTokens: nil,
             currentStreakDays: nil, longestStreakDays: nil, longestRunningTurnSeconds: nil
         )
-        value.sectionSources[.tokenUsage] = "本机 Codex token_count 事件（最近 7 天）"
-        value.warnings = ["每日 Token 仅统计这台 Mac 上 Codex 已落盘的 token_count 事件，不包含其他设备或尚未落盘的活动。"]
+        value.sectionSources[.tokenUsage] = "本机 Codex token_count（最近 7 天）"
+        value.tokenRecordedDates = Set(tokensByDay.keys)
+        value.warnings = [
+            "每日优先显示本机 token_count 的有效 Token；仅在 Token 记录缺失时，才使用 Credits 变化估算。"
+        ]
         return value
     }
 
@@ -127,6 +181,11 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
         } ?? false
         let startingOffset = canContinue ? previous?.scannedOffset ?? 0 : 0
         var previousTotal = canContinue ? previous?.previousTotal : nil
+        var previousInput = canContinue ? previous?.previousInput : nil
+        var previousCachedInput = canContinue ? previous?.previousCachedInput : nil
+        var previousOutput = canContinue ? previous?.previousOutput : nil
+        var currentModel = canContinue ? previous?.currentModel : nil
+        var currentServiceTier = canContinue ? previous?.currentServiceTier : nil
         var tokensByDay = canContinue ? previous?.tokensByDay ?? [:] : [:]
         let data: Data
         do {
@@ -137,7 +196,9 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
         } catch {
             return pruning(previous ?? FileScanState(
                 size: file.size, modifiedAt: file.modifiedAt, scannedOffset: 0,
-                previousTotal: nil, tokensByDay: [:]
+                previousTotal: nil, previousInput: nil, previousCachedInput: nil,
+                previousOutput: nil, currentModel: nil, currentServiceTier: nil,
+                tokensByDay: [:]
             ), rangeStart: rangeStart)
         }
 
@@ -146,6 +207,7 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
         fractionalTimestamp.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let standardTimestamp = ISO8601DateFormatter()
         let tokenMarker = Data("\"token_count\"".utf8)
+        let settingsMarker = Data("\"thread_settings_applied\"".utf8)
         var cursor = data.startIndex
         var consumed = data.startIndex
         while cursor < data.endIndex {
@@ -153,17 +215,54 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
             let lineEnd = newline ?? data.endIndex
             let line = data.subdata(in: cursor..<lineEnd)
             var mayAdvance = true
-            if line.count <= 1_048_576, line.range(of: tokenMarker) != nil {
+            if line.count <= 1_048_576,
+               (line.range(of: tokenMarker) != nil || line.range(of: settingsMarker) != nil) {
                 if let event = try? decoder.decode(RolloutEvent.self, from: line),
-                   event.payload.type == "token_count",
-                   let info = event.payload.info,
                    let timestamp = fractionalTimestamp.date(from: event.timestamp)
                     ?? standardTimestamp.date(from: event.timestamp) {
+                    if event.payload.type == "thread_settings_applied",
+                       let settings = event.payload.threadSettings {
+                        currentModel = settings.model ?? currentModel
+                        currentServiceTier = settings.serviceTier ?? currentServiceTier
+                    }
+                    guard event.payload.type == "token_count", let info = event.payload.info else {
+                        consumed = newline.map { data.index(after: $0) } ?? lineEnd
+                        if let newline { cursor = data.index(after: newline); continue }
+                        break
+                    }
                     let current = info.totalTokenUsage.totalTokens
+                    let currentInput = info.totalTokenUsage.inputTokens
+                    let currentCachedInput = info.totalTokenUsage.cachedInputTokens ?? 0
+                    let currentOutput = info.totalTokenUsage.outputTokens
                     let increment = previousTotal.map { current >= $0 ? current - $0 : current } ?? current
+                    let inputIncrement = currentInput.map { value in
+                        previousInput.map { value >= $0 ? value - $0 : value } ?? value
+                    }
+                    let cachedIncrement = previousCachedInput.map {
+                        currentCachedInput >= $0 ? currentCachedInput - $0 : currentCachedInput
+                    } ?? currentCachedInput
+                    let outputIncrement = currentOutput.map { value in
+                        previousOutput.map { value >= $0 ? value - $0 : value } ?? value
+                    }
                     previousTotal = current
+                    previousInput = currentInput
+                    previousCachedInput = currentCachedInput
+                    previousOutput = currentOutput
                     if timestamp >= rangeStart, timestamp <= now.addingTimeInterval(60), increment >= 0 {
-                        tokensByDay[calendar.startOfDay(for: timestamp), default: 0] += increment
+                        let credits = currentModel.flatMap { model in
+                            OpenAIChatGPTCreditCalculator.credits(
+                                uncachedInputTokens: max(0, (inputIncrement ?? 0) - cachedIncrement),
+                                cachedInputTokens: max(0, cachedIncrement),
+                                outputTokens: max(0, outputIncrement ?? 0),
+                                model: model,
+                                serviceTier: currentServiceTier
+                            )
+                        } ?? 0
+                        tokensByDay[calendar.startOfDay(for: timestamp), default: TokenTotals()].add(
+                            processed: increment,
+                            cachedInput: max(0, cachedIncrement),
+                            credits: credits
+                        )
                     }
                 } else if newline == nil {
                     mayAdvance = false
@@ -181,6 +280,11 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
             modifiedAt: file.modifiedAt,
             scannedOffset: startingOffset + UInt64(data.distance(from: data.startIndex, to: consumed)),
             previousTotal: previousTotal,
+            previousInput: previousInput,
+            previousCachedInput: previousCachedInput,
+            previousOutput: previousOutput,
+            currentModel: currentModel,
+            currentServiceTier: currentServiceTier,
             tokensByDay: tokensByDay
         )
     }
@@ -191,6 +295,11 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
             modifiedAt: state.modifiedAt,
             scannedOffset: state.scannedOffset,
             previousTotal: state.previousTotal,
+            previousInput: state.previousInput,
+            previousCachedInput: state.previousCachedInput,
+            previousOutput: state.previousOutput,
+            currentModel: state.currentModel,
+            currentServiceTier: state.currentServiceTier,
             tokensByDay: state.tokensByDay.filter { $0.key >= rangeStart }
         )
     }

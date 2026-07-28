@@ -54,6 +54,7 @@ struct OfficialAnalyticsParser: Sendable {
             longestRunningTurnSeconds: nil
         )
         result.sectionSources = Dictionary(uniqueKeysWithValues: availableSections.map { ($0, "官方页面分析") })
+        result.tokenRecordedDates = workspace == nil ? nil : Set(activity.map(\.date))
         result.warnings = malformed.map { "响应结构不兼容：\($0)" }
         return result
     }

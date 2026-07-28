@@ -41,6 +41,7 @@ enum MenuBarQuotaLevel: String, CaseIterable {
 
 struct MenuPanelView: View {
     @Bindable var monitor: UsageMonitoringService
+    let history: any UsageHistoryReading
     var openDashboardAction: (() -> Void)?
     var openLoginAction: (() -> Void)?
     var openSettingsAction: (() -> Void)?
@@ -52,14 +53,15 @@ struct MenuPanelView: View {
     @State private var showsBrowserChoice = false
     @State private var showsLocalCodexConsent = false
     @State private var showsRealtimeTokenConsent = false
+    @State private var creditBalanceSamples: [CreditBalanceSample] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: AppleUI.spacingS) {
             header
             CompactUsageSummary(snapshot: monitor.snapshot, now: monitor.now)
-            progressSection
             CompactAnalyticsSummary(
                 analytics: monitor.snapshot.analytics,
+                measurement: todayUsageMeasurement,
                 realtimeAuthorizationRequired: !localRealtimeTokenUsage
             )
             statusSection
@@ -75,6 +77,9 @@ struct MenuPanelView: View {
         .task {
             monitor.start()
             await monitor.refreshIfStaleForMenuOpen()
+        }
+        .task(id: monitor.historyRevision) {
+            loadCreditBalanceSamples()
         }
         .alert("浏览器与应用登录相互独立", isPresented: $showsBrowserChoice) {
             Button("应用内登录") {
@@ -99,11 +104,12 @@ struct MenuPanelView: View {
         .alert("允许读取本机实时 Token 事件？", isPresented: $showsRealtimeTokenConsent) {
             Button("授权并刷新") {
                 localRealtimeTokenUsage = true
+                monitor.updateLocalUsageMonitoring()
                 Task { await monitor.refresh() }
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("只读取 ~/.codex/sessions 中最近 7 天 token_count 事件的时间戳和累计数值，用于计算这台 Mac 每天的 Token；不会提取消息正文。")
+            Text("只读取 ~/.codex/sessions 中最近 7 天 token_count 事件的时间戳、总量与缓存命中量；主数值会扣除缓存输入，不会提取消息正文。")
         }
     }
 
@@ -122,20 +128,6 @@ struct MenuPanelView: View {
         }
     }
 
-    private var progressSection: some View {
-        AppleCard(padding: 11, cornerRadius: AppleUI.cardRadius, material: nil) {
-            VStack(spacing: 9) {
-                UsageProgressRow(title: "主额度", window: monitor.snapshot.primaryWindow, now: monitor.now,
-                                 color: primaryQuotaColor, isEstimated: monitor.snapshot.isEstimated)
-                if let secondary = monitor.snapshot.secondaryWindow {
-                    Divider().opacity(0.3)
-                    UsageProgressRow(title: "次级额度", window: secondary, now: monitor.now,
-                                     color: AppleUI.purple, isEstimated: monitor.snapshot.isEstimated)
-                }
-            }
-        }
-    }
-
     private var statusSection: some View {
         MonitoringStatusBar(snapshot: monitor.snapshot, failure: monitor.lastFailure, isRefreshing: monitor.isRefreshing)
     }
@@ -150,7 +142,7 @@ struct MenuPanelView: View {
                 }
                 .buttonStyle(CompactGlassButtonStyle())
             .disabled(monitor.isRefreshing)
-            .help("同步刷新额度数据和今日 Token")
+            .help("同步刷新额度数据和今日套餐消耗")
             .accessibilityValue(monitor.isRefreshing ? "正在刷新" : "可刷新")
 
                 Button {
@@ -217,17 +209,25 @@ struct MenuPanelView: View {
 
     private var statusColor: Color { presentationState.color }
 
+    private var todayUsageMeasurement: DailyUsageMeasurement? {
+        return DailyTokenUsageBuilder.make(
+            analytics: monitor.snapshot.analytics,
+            creditBalanceSamples: creditBalanceSamples,
+            now: monitor.now
+        ).days.last?.measurement
+    }
+
+    private func loadCreditBalanceSamples() {
+        let weekStart = Calendar.current.date(byAdding: .day, value: -7, to: monitor.now) ?? .distantPast
+        creditBalanceSamples = (try? history.creditBalanceSamples(since: weekStart)) ?? []
+    }
+
     private var presentationState: UsagePresentationState {
         UsagePresentationState(
             snapshot: monitor.snapshot,
             failure: monitor.lastFailure,
             isRefreshing: monitor.isRefreshing
         )
-    }
-
-    private var primaryQuotaColor: Color {
-        monitor.snapshot.primaryWindow?.remainingPercentage
-            .map { MenuBarQuotaLevel(remainingPercentage: $0).color } ?? AppleUI.accent
     }
 
     private var localCodexActionTitle: String {
@@ -313,19 +313,19 @@ private struct MenuPanelRootBackground: View {
                     .clipShape(shape)
             }
         }
-            .overlay {
-                shape.strokeBorder(
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(reduceTransparency ? 0 : 0.30),
-                            Color(nsColor: .separatorColor).opacity(contrast == .increased ? 0.48 : 0.20)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: contrast == .increased ? 1 : 0.7
-                )
-            }
+        .overlay {
+            shape.strokeBorder(
+                LinearGradient(
+                    colors: [
+                        Color.white.opacity(reduceTransparency ? 0 : 0.30),
+                        Color(nsColor: .separatorColor).opacity(contrast == .increased ? 0.48 : 0.20)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                lineWidth: contrast == .increased ? 1 : 0.7
+            )
+        }
     }
 
     private var baseColor: Color {

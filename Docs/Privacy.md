@@ -8,6 +8,8 @@
 - 应用不读取 Codex 聊天、会话内容或用户项目代码。
 - `SensitiveDataRedactor` 对 Authorization、Cookie、Token、Session ID、Email 和敏感查询参数脱敏。
 - 当前实现不自行持久化 Token，因此无需 Keychain。若未来增加非 WebKit 敏感状态，必须使用 Keychain，不能使用 UserDefaults。
-- “本机实时今日 Token”需要单独授权。启用后，应用只扫描 `~/.codex/sessions` 中的结构化 `token_count` 事件、累计 Token 数与时间戳，并忽略提示词、代码、工具输出、文件路径和消息正文。该统计仅代表这台 Mac 已落盘的 Codex 活动，不包含其他设备。
+- “本机实时用量”需要单独授权。启用后，应用只扫描 `~/.codex/sessions` 中结构化 `token_count`、模型/速度设置与时间戳，并忽略提示词、代码、工具输出、文件路径和消息正文。界面按 OpenAI 公开费率分别计算非缓存输入、缓存输入和输出 Token 对应的 Credits；未知模型不推测计价。该统计仅代表这台 Mac 已落盘的 Codex 活动，不包含其他设备。
+- “本机 Claude Code 用量”需要单独授权。启用后，应用只扫描 `~/.claude/projects` 中结构化的 usage 数值、消息 ID 和时间戳；消息 ID 只在当次扫描内用于去重，不持久化。应用不读取或导出提示词、回复、代码、工具输出与 Claude 认证凭据，并明确该数据不等同于套餐剩余额度。
+- 用量 JSON、历史 CSV 与诊断 JSON 只在用户主动选择保存位置时生成。导出模型不包含 Codex 账号身份；诊断错误、状态和警告在编码前再次进行敏感信息脱敏。
 
 SwiftData 默认位于应用容器/Application Support 对应目录；Swift Package 开发运行时由系统为 bundle 标识选择本地容器位置。

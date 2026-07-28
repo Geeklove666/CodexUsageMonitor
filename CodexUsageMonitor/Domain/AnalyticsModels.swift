@@ -28,6 +28,9 @@ struct CodexAnalyticsSnapshot: Sendable, Codable, Equatable {
     let longestRunningTurnSeconds: Int?
     var sectionSources: [CodexAnalyticsSection: String] = [:]
     var warnings: [String] = []
+    /// `nil` preserves legacy cached snapshots. A non-nil set distinguishes a
+    /// real zero-token bucket from an activity-only day introduced by merging.
+    var tokenRecordedDates: Set<Date>? = nil
 
     func has(_ section: CodexAnalyticsSection) -> Bool { availableSections.contains(section) }
     var hasAccountUsageSummary: Bool {
@@ -53,7 +56,29 @@ struct CodexAnalyticsSnapshot: Sendable, Codable, Equatable {
         return matching.reduce(0) { $0 + $1.totalTokens }
     }
 
-    var todayTokens: Int64? { tokens(on: .now) }
+    func effectiveTokens(on date: Date, calendar: Calendar = .current) -> Int64? {
+        guard has(.tokenUsage) else { return nil }
+        if let tokenRecordedDates,
+           !tokenRecordedDates.contains(where: { calendar.isDate($0, inSameDayAs: date) }) {
+            return nil
+        }
+        let matching = dailyActivity.filter { calendar.isDate($0.date, inSameDayAs: date) }
+        guard !matching.isEmpty else { return nil }
+        return matching.reduce(0) { result, activity in
+            result + max(0, activity.totalTokens - activity.cachedInputTokens)
+        }
+    }
+
+    var todayTokens: Int64? { effectiveTokens(on: .now) }
+
+    func calculatedCredits(on date: Date, calendar: Calendar = .current) -> Double? {
+        guard has(.tokenUsage) else { return nil }
+        let matching = dailyActivity.filter { calendar.isDate($0.date, inSameDayAs: date) }
+        guard matching.contains(where: { $0.credits > 0 }) else { return nil }
+        return matching.reduce(0) { $0 + max(0, $1.credits) }
+    }
+
+    var todayCalculatedCredits: Double? { calculatedCredits(on: .now) }
 
     var clientBreakdown: [CodexActivityBreakdown] { aggregate(\.clients) }
     var modelBreakdown: [CodexActivityBreakdown] { aggregate(\.models) }
@@ -150,6 +175,7 @@ struct CodexAnalyticsSnapshot: Sendable, Codable, Equatable {
         )
         result.sectionSources = sectionSources.merging(other.sectionSources) { _, newer in newer }
         result.warnings = Array(Set(warnings + other.warnings)).sorted()
+        result.tokenRecordedDates = Set(tokenActivity.map { Calendar.current.startOfDay(for: $0.date) })
         return result
     }
 
@@ -170,15 +196,17 @@ struct CodexAnalyticsSnapshot: Sendable, Codable, Equatable {
         }
         let baseline = sourceDisplayName.contains("实时") ? other.dailyActivity : dailyActivity
         let realtime = sourceDisplayName.contains("实时") ? dailyActivity : other.dailyActivity
-        var values = Dictionary(uniqueKeysWithValues: baseline.map { ($0.date, $0) })
-        for day in realtime { values[day.date] = day }
+        var values = dailyActivityByCalendarDay(baseline)
+        for day in realtime {
+            values[Calendar.current.startOfDay(for: day.date)] = day
+        }
         return values.keys.sorted().compactMap { values[$0] }
     }
 
     private func mergeDailyActivity(tokenActivity: [CodexDailyActivity],
                                     activitySource: CodexAnalyticsSnapshot) -> [CodexDailyActivity] {
-        let tokenDays = Dictionary(uniqueKeysWithValues: tokenActivity.map { ($0.date, $0) })
-        let activityDays = Dictionary(uniqueKeysWithValues: activitySource.dailyActivity.map { ($0.date, $0) })
+        let tokenDays = dailyActivityByCalendarDay(tokenActivity)
+        let activityDays = dailyActivityByCalendarDay(activitySource.dailyActivity)
         return Set(tokenDays.keys).union(activityDays.keys).sorted().map { date in
             let token = tokenDays[date]
             let activity = activityDays[date]
@@ -187,7 +215,7 @@ struct CodexAnalyticsSnapshot: Sendable, Codable, Equatable {
                 users: activity?.users ?? 0,
                 threads: activity?.threads ?? 0,
                 turns: activity?.turns ?? 0,
-                credits: activity?.credits ?? 0,
+                credits: token?.credits ?? activity?.credits ?? 0,
                 uncachedInputTokens: token?.uncachedInputTokens ?? 0,
                 cachedInputTokens: token?.cachedInputTokens ?? 0,
                 outputTokens: token?.outputTokens ?? 0,
@@ -195,6 +223,19 @@ struct CodexAnalyticsSnapshot: Sendable, Codable, Equatable {
                 clients: activity?.clients ?? [],
                 models: activity?.models ?? []
             )
+        }
+    }
+
+    /// Date-only buckets can arrive as UTC midnight while local session data is
+    /// grouped at local midnight. Treat both as the same calendar day so the
+    /// realtime value replaces the delayed account-usage value instead of being
+    /// counted a second time.
+    private func dailyActivityByCalendarDay(
+        _ values: [CodexDailyActivity],
+        calendar: Calendar = .current
+    ) -> [Date: CodexDailyActivity] {
+        values.reduce(into: [:]) { result, value in
+            result[calendar.startOfDay(for: value.date)] = value
         }
     }
 

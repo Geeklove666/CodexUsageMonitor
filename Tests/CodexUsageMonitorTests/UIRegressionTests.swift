@@ -39,9 +39,10 @@ final class NativeUISnapshotSmokeTests: XCTestCase {
         source += try String(contentsOf: repositoryRoot
             .appendingPathComponent("CodexUsageMonitor/Domain/UsagePresentationState.swift"), encoding: .utf8)
 
-        for destination in ["概览", "使用历史", "告警", "数据来源", "设置"] {
+        for destination in ["总结", "额度详情", "使用历史", "告警", "数据来源", "设置"] {
             XCTAssertTrue(source.contains(destination), "Missing dashboard destination: \(destination)")
         }
+        XCTAssertTrue(source.contains("@State private var selection: DashboardSection = .summary"))
         for state in ["live", "loading", "cached", "estimated", "offline", "needsLogin", "failed", "unavailable", "exhausted"] {
             XCTAssertTrue(source.contains("case \(state)"), "Missing dashboard state: \(state)")
         }
@@ -151,8 +152,9 @@ final class NativeUISnapshotSmokeTests: XCTestCase {
         let analyticsSource = try String(contentsOf: repositoryRoot
             .appendingPathComponent("CodexUsageMonitor/Shared/Components/AnalyticsComponents.swift"), encoding: .utf8)
 
-        XCTAssertTrue(menuSource.contains("AppleCard(padding: 11, cornerRadius: AppleUI.cardRadius, material: nil)"))
+        XCTAssertFalse(menuSource.contains("private var progressSection"))
         XCTAssertTrue(monitoringSource.contains("AppleCard(padding: 12, cornerRadius: AppleUI.cardRadius, material: nil)"))
+        XCTAssertTrue(monitoringSource.contains("UsageProgressRow("))
         XCTAssertTrue(analyticsSource.contains("AppleCard(padding: 9, cornerRadius: AppleUI.cardRadius, material: nil)"))
     }
 

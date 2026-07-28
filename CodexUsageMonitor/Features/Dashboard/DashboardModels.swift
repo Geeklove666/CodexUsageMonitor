@@ -13,7 +13,7 @@ enum DashboardSection: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .summary: "总结"
-        case .overview: "概览"
+        case .overview: "额度详情"
         case .usageHistory: "使用历史"
         case .alerts: "告警"
         case .dataSource: "数据来源"
@@ -23,8 +23,8 @@ enum DashboardSection: String, CaseIterable, Identifiable {
 
     var subtitle: String {
         switch self {
-        case .summary: "一页查看核心额度、消耗速度与最近一周 Token 用量。"
-        case .overview: "集中查看额度、重置窗口与数据新鲜度。"
+        case .summary: "一页查看核心额度、消耗速度与最近一周 Token；缺失时显示 Credits 估算。"
+        case .overview: "查看额度窗口、子额度与历史变化。"
         case .usageHistory: "带可访问趋势图和表格视图的本地历史。"
         case .alerts: "额度变化的阈值与提醒规则。"
         case .dataSource: "来源状态、时间戳与套餐价格上下文。"

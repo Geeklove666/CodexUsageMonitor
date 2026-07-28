@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     let history: UsageHistoryStore
@@ -15,11 +16,15 @@ struct SettingsView: View {
     @AppStorage(AppPreferences.Key.notifyReset) private var notifyReset = true
     @AppStorage(LocalCodexSessionAuthorization.preferenceKey) private var localCodexLogin = false
     @AppStorage(LocalRealtimeTokenAuthorization.preferenceKey) private var localRealtimeTokenUsage = false
+    @AppStorage(LocalClaudeUsageAuthorization.preferenceKey) private var localClaudeUsage = false
     @State private var model = SettingsModel()
     @State private var selection: SettingsSection = .general
     @State private var showsLocalCodexConsent = false
     @State private var showsRealtimeTokenConsent = false
     @State private var showsClearAllConfirmation = false
+    @State private var showsClaudeUsageConsent = false
+    @State private var exportPayload: UsageExportPayload?
+    @State private var showsExporter = false
 
     var body: some View {
         ZStack {
@@ -48,11 +53,12 @@ struct SettingsView: View {
         .alert("允许读取本机实时 Token 事件？", isPresented: $showsRealtimeTokenConsent) {
             Button("授权并启用") {
                 localRealtimeTokenUsage = true
+                monitor.updateLocalUsageMonitoring()
                 Task { await monitor.refresh() }
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("应用只扫描 ~/.codex/sessions 中最近 7 天结构化的 token_count 事件及时间戳，用于计算这台 Mac 每天的 Token 消耗；不会提取或保存提示词、代码、工具输出、文件路径或消息正文。可随时在此撤销授权。")
+            Text("应用只扫描 ~/.codex/sessions 中最近 7 天结构化 token_count 事件的时间戳、总量与缓存命中量；每日有效 Token 会扣除缓存输入。不会提取或保存提示词、代码、工具输出、文件路径或消息正文，可随时撤销授权。")
         }
         .alert("允许使用本机 Codex 登录读取额度？", isPresented: $showsLocalCodexConsent) {
             Button("授权并刷新") {
@@ -77,7 +83,29 @@ struct SettingsView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("这会清除历史、OpenAI 网页登录状态、本机 Codex 授权与实时 Token 授权。下次刷新需要重新登录或重新授权。")
+            Text("这会清除历史、OpenAI 网页登录状态、本机 Codex 授权、实时 Token 授权与 Claude Code 本机用量授权。下次刷新需要重新登录或重新授权。")
+        }
+        .alert("允许读取本机 Claude Code 用量？", isPresented: $showsClaudeUsageConsent) {
+            Button("授权并启用") {
+                localClaudeUsage = true
+                monitor.updateLocalUsageMonitoring()
+                Task { await monitor.refreshLocalUsage(reason: "启用 Claude Code 本机用量") }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("应用只读取 ~/.claude/projects 中结构化的 Token 数量、消息 ID 与时间戳，用于汇总最近 7 天本机用量；不会读取或保存提示词、回复、代码、工具输出和认证凭据。该数据不代表 Claude 套餐剩余额度。")
+        }
+        .fileExporter(
+            isPresented: $showsExporter,
+            document: exportPayload?.document,
+            contentType: exportPayload?.contentType ?? .json,
+            defaultFilename: exportPayload?.defaultFilename
+        ) { result in
+            switch result {
+            case .success: model.message = "导出完成"
+            case let .failure(error): model.message = "导出失败：\(SensitiveDataRedactor().redact(error.localizedDescription))"
+            }
+            exportPayload = nil
         }
         .task {
             await model.load()
@@ -155,6 +183,7 @@ struct SettingsView: View {
                     }
                 }
             }
+
             Label(model.notificationAuthorization.label,
                   systemImage: model.notificationAuthorization.canDeliver ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                 .font(.caption)
@@ -233,14 +262,26 @@ struct SettingsView: View {
                     Divider().opacity(0.28).padding(.vertical, 13)
 
                     SettingsRow(symbol: "bolt.horizontal.circle.fill", color: AppleUI.accent,
-                                title: "本机每日 Token", detail: "汇总最近 7 天 Codex token_count 事件；不读取会话正文") {
+                                title: "本机每日有效 Token", detail: "汇总最近 7 天 token_count 并扣除缓存输入；不读取会话正文") {
                         Toggle("", isOn: realtimeTokenAuthorizationBinding).labelsHidden()
                             .help("授权或撤销本机实时 Token 统计")
                     }
                 }
             }
 
-            Text("启用本机 Codex 后会优先读取这台 Mac 的 Codex 额度；不可用时回退到 OpenAI 官方页面、最近有效缓存与本地趋势估算。本机 Token 统计是独立授权，不参与登录。")
+            AppleCard {
+                SettingsRow(
+                    symbol: "sparkles.rectangle.stack",
+                    color: AppleUI.purple,
+                    title: "本机 Claude Code 用量",
+                    detail: "最近 7 天结构化 Token 统计；不读取会话正文，不代表套餐额度"
+                ) {
+                    Toggle("", isOn: localClaudeUsageBinding).labelsHidden()
+                        .help("授权或撤销本机 Claude Code 用量统计")
+                }
+            }
+
+            Text("启用本机 Codex 后会优先读取这台 Mac 的 Codex 额度；不可用时回退到 OpenAI 官方页面、最近有效缓存与本地趋势估算。Codex 与 Claude Code 的本机 Token 统计均为独立授权，不参与登录。")
                 .font(.caption).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 4)
@@ -262,6 +303,25 @@ struct SettingsView: View {
             }
             AppleCard {
                 VStack(spacing: 12) {
+                    privacyButton("导出用量数据（JSON）", symbol: "square.and.arrow.up", destructive: false) {
+                        prepareExport { try UsageExportService().usageJSON(
+                            current: monitor.snapshot,
+                            providers: monitor.providerSnapshots,
+                            history: history
+                        ) }
+                    }
+                    privacyButton("导出历史记录（CSV）", symbol: "tablecells", destructive: false) {
+                        prepareExport { try UsageExportService().historyCSV(history: history) }
+                    }
+                    privacyButton("导出脱敏诊断报告", symbol: "stethoscope", destructive: false) {
+                        prepareExport { try UsageExportService().diagnosticJSON(
+                            snapshot: monitor.snapshot,
+                            providers: monitor.providerSnapshots,
+                            providerFailures: monitor.providerFailures,
+                            diagnostic: monitor.diagnostic,
+                            persistenceWarning: monitor.persistenceWarning
+                        ) }
+                    }
                     privacyButton("清除网页登录状态", symbol: "person.crop.circle.badge.xmark", destructive: false) {
                         Task { await session.clearLoginState(); model.message = "登录状态已清除" }
                     }
@@ -312,6 +372,7 @@ struct SettingsView: View {
                 showsRealtimeTokenConsent = true
             } else {
                 localRealtimeTokenUsage = false
+                monitor.updateLocalUsageMonitoring()
                 Task { await monitor.refresh() }
             }
         }
@@ -329,6 +390,20 @@ struct SettingsView: View {
                     await model.refreshLocalCodexStatus()
                     await monitor.refresh()
                 }
+            }
+        }
+    }
+
+    private var localClaudeUsageBinding: Binding<Bool> {
+        Binding {
+            localClaudeUsage
+        } set: { enabled in
+            if enabled {
+                showsClaudeUsageConsent = true
+            } else {
+                localClaudeUsage = false
+                monitor.updateLocalUsageMonitoring()
+                Task { await monitor.refreshLocalUsage(reason: "撤销 Claude Code 本机用量") }
             }
         }
     }
@@ -405,9 +480,21 @@ struct SettingsView: View {
     private func clearOrdinarySettings() {
         UserDefaults.standard.removeObject(forKey: LocalCodexSessionAuthorization.preferenceKey)
         UserDefaults.standard.removeObject(forKey: LocalRealtimeTokenAuthorization.preferenceKey)
+        UserDefaults.standard.removeObject(forKey: LocalClaudeUsageAuthorization.preferenceKey)
+        monitor.updateLocalUsageMonitoring()
         for key in UserDefaults.standard.dictionaryRepresentation().keys
             where key.hasPrefix("notified.") || key.hasPrefix("consumption.") {
             UserDefaults.standard.removeObject(forKey: key)
+        }
+    }
+
+
+    private func prepareExport(_ builder: () throws -> UsageExportPayload) {
+        do {
+            exportPayload = try builder()
+            showsExporter = true
+        } catch {
+            model.message = "导出失败：\(SensitiveDataRedactor().redact(error.localizedDescription))"
         }
     }
 }

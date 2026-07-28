@@ -32,11 +32,7 @@ final class UsageSnapshotPipeline {
     }
 
     func persistAnalytics(_ snapshot: CodexUsageSnapshot) -> UsageSnapshotPipelineResult {
-        let result = persist(snapshot)
-        return UsageSnapshotPipelineResult(
-            historyChanged: false,
-            persistenceWarning: result.persistenceWarning
-        )
+        persist(snapshot)
     }
 
     private func persist(_ snapshot: CodexUsageSnapshot) -> UsageSnapshotPipelineResult {

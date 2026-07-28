@@ -123,6 +123,48 @@ final class UsageHistoryStore: UsageHistoryReading, UsageHistoryWriting {
         }
     }
 
+    func creditBalanceSamples(since date: Date) throws -> [CreditBalanceSample] {
+        let context = try context
+        let recentDescriptor = FetchDescriptor<UsageSnapshotEntity>(
+            predicate: #Predicate { $0.fetchedAt >= date },
+            sortBy: [SortDescriptor(\.fetchedAt)]
+        )
+        var baselineDescriptor = FetchDescriptor<UsageSnapshotEntity>(
+            predicate: #Predicate { $0.fetchedAt < date },
+            sortBy: [SortDescriptor(\.fetchedAt, order: .reverse)]
+        )
+        baselineDescriptor.fetchLimit = 1
+        let recent = try context.fetch(recentDescriptor)
+        var baselineCandidates = try context.fetch(baselineDescriptor)
+        if baselineCandidates.first?.creditsRemaining == nil
+            || baselineCandidates.first?.isCached == true
+            || baselineCandidates.first?.isEstimated == true {
+            var fallbackDescriptor = FetchDescriptor<UsageSnapshotEntity>(
+                predicate: #Predicate { $0.fetchedAt < date },
+                sortBy: [SortDescriptor(\.fetchedAt, order: .reverse)]
+            )
+            fallbackDescriptor.fetchLimit = 50
+            baselineCandidates = try context.fetch(fallbackDescriptor)
+        }
+        let baseline = baselineCandidates.first {
+            $0.creditsRemaining != nil && !$0.isCached && !$0.isEstimated
+        }
+        let entities = (baseline.map { [$0] } ?? []) + recent
+        return entities.compactMap { entity in
+            guard let remaining = entity.creditsRemaining else { return nil }
+            let identity = entity.restoredAccountIdentity
+            return CreditBalanceSample(
+                id: entity.id,
+                recordedAt: entity.fetchedAt,
+                remaining: remaining,
+                isCached: entity.isCached,
+                isEstimated: entity.isEstimated,
+                accountKey: identity?.accountID ?? identity?.email,
+                sourceKind: UsageSourceKind(rawValue: entity.sourceKindRaw) ?? .unavailable
+            )
+        }
+    }
+
     func recentSnapshots(limit: Int = 12) throws -> [CodexUsageSnapshot] {
         let context = try context
         var descriptor = FetchDescriptor<UsageSnapshotEntity>(sortBy: [SortDescriptor(\.fetchedAt, order: .reverse)])

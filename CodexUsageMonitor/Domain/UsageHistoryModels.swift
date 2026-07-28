@@ -25,6 +25,34 @@ struct UsageHistorySample: Identifiable, Sendable, Equatable {
     }
 }
 
+struct CreditBalanceSample: Identifiable, Sendable, Equatable {
+    let id: UUID
+    let recordedAt: Date
+    let remaining: Decimal
+    let isCached: Bool
+    let isEstimated: Bool
+    let accountKey: String?
+    let sourceKind: UsageSourceKind
+
+    init(
+        id: UUID = UUID(),
+        recordedAt: Date,
+        remaining: Decimal,
+        isCached: Bool,
+        isEstimated: Bool,
+        accountKey: String? = nil,
+        sourceKind: UsageSourceKind = .unavailable
+    ) {
+        self.id = id
+        self.recordedAt = recordedAt
+        self.remaining = remaining
+        self.isCached = isCached
+        self.isEstimated = isEstimated
+        self.accountKey = accountKey
+        self.sourceKind = sourceKind
+    }
+}
+
 struct UsageTrendPoint: Identifiable, Sendable, Equatable {
     let id: UUID
     let date: Date
@@ -76,4 +104,5 @@ enum UsageHistoryRange: String, CaseIterable, Identifiable, Sendable {
 @MainActor
 protocol UsageHistoryReading: AnyObject {
     func usageSamples(since date: Date) throws -> [UsageHistorySample]
+    func creditBalanceSamples(since date: Date) throws -> [CreditBalanceSample]
 }

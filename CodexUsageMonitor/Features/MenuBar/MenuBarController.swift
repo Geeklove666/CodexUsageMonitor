@@ -80,6 +80,7 @@ final class MenuBarController: NSObject {
         Task { await monitor.refreshIfStaleForMenuOpen() }
         let root = MenuPanelView(
             monitor: monitor,
+            history: history,
             openDashboardAction: { [weak self] in self?.openDashboard() },
             openLoginAction: { [weak self] in self?.openLogin() },
             openSettingsAction: { [weak self] in self?.openSettings() }
