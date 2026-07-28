@@ -1,7 +1,12 @@
 import Foundation
 
 struct CodexUsageProvider: AIUsageProvider {
-    let descriptor = AIProviderDescriptor(id: .codex, displayName: "Codex")
+    let descriptor = AIProviderDescriptor(
+        id: .codex,
+        displayName: "Codex",
+        capabilities: [.quotaWindows, .balance, .localTokenHistory, .remoteUsageHistory],
+        authenticationModes: [.localCLI, .localFiles, .embeddedBrowser]
+    )
     private let repository: any CodexUsageRepository
 
     init(repository: any CodexUsageRepository) {

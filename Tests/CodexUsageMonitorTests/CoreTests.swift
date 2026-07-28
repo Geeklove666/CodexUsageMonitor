@@ -16,14 +16,6 @@ final class ModelAndFormattingTests: XCTestCase {
         XCTAssertEqual(DurationFormatter.short(3_720), "1h2m")
         XCTAssertEqual(DurationFormatter.compactChinese(601_200), "6天23时")
     }
-    func testTokenSmallGoalFormatting() {
-        XCTAssertEqual(TokenMilestoneFormatter.message(tokens: 0), "距离花掉 1 个小目标（Token）还差 100M")
-        XCTAssertEqual(TokenMilestoneFormatter.message(tokens: 80_000_000), "距离花掉 1 个小目标（Token）还差 20M")
-        XCTAssertEqual(TokenMilestoneFormatter.message(tokens: 100_000_000), "目前已经花掉了 1 个小目标")
-        XCTAssertEqual(TokenMilestoneFormatter.message(tokens: 118_000_000), "目前已经花掉了 1.18 个小目标")
-        XCTAssertEqual(TokenMilestoneFormatter.todayMessage(tokens: 18_000_000), "今天已经花掉了 0.18 个小目标")
-        XCTAssertEqual(TokenMilestoneFormatter.todayMessage(tokens: 126_400_000), "今天已经花掉了 1.26 个小目标")
-    }
     func testSubscriptionTierFormatting() {
         XCTAssertEqual(SubscriptionTierFormatter.displayName("plus"), "$20 Plus 订阅")
         XCTAssertEqual(SubscriptionTierFormatter.displayName("Free"), "$0 Free")
@@ -360,6 +352,161 @@ final class DailyTokenUsageBuilderTests: XCTestCase {
         XCTAssertNil(result.peakTokens)
     }
 
+    func testTokenRecordTakesPriorityOverCalculatedCredits() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 7, day: 20, hour: 12)))
+        var analytics = analyticsSnapshot(
+            date: calendar.startOfDay(for: now),
+            tokens: 92_000_000,
+            credits: 92.32,
+            now: now
+        )
+        analytics.tokenRecordedDates = [calendar.startOfDay(for: now)]
+
+        let today = try XCTUnwrap(DailyTokenUsageBuilder.make(
+            analytics: analytics,
+            now: now,
+            calendar: calendar
+        ).days.last)
+
+        XCTAssertEqual(today.measurement, .tokens(92_000_000))
+        XCTAssertNil(today.estimatedCredits)
+    }
+
+    func testExplicitZeroTokenRecordDoesNotFallBackToCredits() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 7, day: 20, hour: 12)))
+        let today = calendar.startOfDay(for: now)
+        var analytics = analyticsSnapshot(date: today, tokens: 0, credits: 12.5, now: now)
+        analytics.tokenRecordedDates = [today]
+
+        let result = try XCTUnwrap(DailyTokenUsageBuilder.make(
+            analytics: analytics,
+            now: now,
+            calendar: calendar
+        ).days.last)
+
+        XCTAssertEqual(result.measurement, .tokens(0))
+    }
+
+    func testMissingTokenFallsBackToEstimatedCreditBalanceDecrease() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 7, day: 20, hour: 12)))
+        let today = calendar.startOfDay(for: now)
+        let samples = [
+            creditSample(today.addingTimeInterval(60), 100),
+            creditSample(today.addingTimeInterval(120), Decimal(string: "92.5")!)
+        ]
+
+        let result = try XCTUnwrap(DailyTokenUsageBuilder.make(
+            analytics: nil,
+            creditBalanceSamples: samples,
+            now: now,
+            calendar: calendar
+        ).days.last)
+
+        XCTAssertEqual(result.measurement, .estimatedCredits(7.5))
+    }
+
+    func testCreditIncreaseRebuildsBaselineWithoutOffsettingUsage() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 7, day: 20, hour: 12)))
+        let today = calendar.startOfDay(for: now)
+        let samples = [
+            creditSample(today.addingTimeInterval(60), 100),
+            creditSample(today.addingTimeInterval(120), 90),
+            creditSample(today.addingTimeInterval(180), 120),
+            creditSample(today.addingTimeInterval(240), 115)
+        ]
+
+        let estimates = DailyCreditUsageEstimator.make(samples: samples, calendar: calendar)
+
+        XCTAssertEqual(estimates[today], 15)
+    }
+
+    func testCreditEstimatorDoesNotCompareDifferentAccountsOrCachedSamples() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 7, day: 20, hour: 12)))
+        let today = calendar.startOfDay(for: now)
+        let samples = [
+            creditSample(today.addingTimeInterval(60), 100, account: "one"),
+            creditSample(today.addingTimeInterval(120), 20, account: "two"),
+            CreditBalanceSample(
+                recordedAt: today.addingTimeInterval(180),
+                remaining: 10,
+                isCached: true,
+                isEstimated: false,
+                accountKey: "two",
+                sourceKind: .localCodexSession
+            ),
+            creditSample(today.addingTimeInterval(240), 18, account: "two")
+        ]
+
+        let estimates = DailyCreditUsageEstimator.make(samples: samples, calendar: calendar)
+
+        XCTAssertEqual(estimates[today], 2)
+    }
+
+    private func analyticsSnapshot(
+        date: Date,
+        tokens: Int64,
+        credits: Double,
+        now: Date
+    ) -> CodexAnalyticsSnapshot {
+        CodexAnalyticsSnapshot(
+            fetchedAt: now,
+            sourceDisplayName: "本机 Codex 用量",
+            rangeStart: date,
+            rangeEnd: date,
+            groupBy: "day",
+            dailyActivity: [
+                CodexDailyActivity(
+                    date: date,
+                    users: 0,
+                    threads: 0,
+                    turns: 0,
+                    credits: credits,
+                    uncachedInputTokens: tokens,
+                    cachedInputTokens: 0,
+                    outputTokens: 0,
+                    totalTokens: tokens,
+                    clients: [],
+                    models: []
+                )
+            ],
+            dailyProductUsage: [],
+            topSkills: [],
+            topPlugins: [],
+            creditEventCount: nil,
+            availableSections: [.tokenUsage],
+            lifetimeTokens: nil,
+            peakDailyTokens: nil,
+            currentStreakDays: nil,
+            longestStreakDays: nil,
+            longestRunningTurnSeconds: nil
+        )
+    }
+
+    private func creditSample(
+        _ date: Date,
+        _ remaining: Decimal,
+        account: String = "one"
+    ) -> CreditBalanceSample {
+        CreditBalanceSample(
+            recordedAt: date,
+            remaining: remaining,
+            isCached: false,
+            isEstimated: false,
+            accountKey: account,
+            sourceKind: .localCodexSession
+        )
+    }
+
     private func dailyActivity(date: Date, tokens: Int64) -> CodexDailyActivity {
         CodexDailyActivity(
             date: date,
@@ -646,6 +793,62 @@ final class OfficialAnalyticsParserTests: XCTestCase {
 }
 
 final class LocalRealtimeTokenUsageReaderTests: XCTestCase {
+    func testOfficialChatGPTCreditRateCardAndFastMultiplier() {
+        XCTAssertEqual(
+            OpenAIChatGPTCreditCalculator.credits(
+                uncachedInputTokens: 1_000_000,
+                cachedInputTokens: 1_000_000,
+                outputTokens: 1_000_000,
+                model: "gpt-5.6-sol",
+                serviceTier: "default"
+            ) ?? -1,
+            887.5,
+            accuracy: 0.000_001
+        )
+        XCTAssertEqual(
+            OpenAIChatGPTCreditCalculator.credits(
+                uncachedInputTokens: 1_000_000,
+                cachedInputTokens: 1_000_000,
+                outputTokens: 1_000_000,
+                model: "gpt-5.6-sol",
+                serviceTier: "fast"
+            ) ?? -1,
+            2_218.75,
+            accuracy: 0.000_001
+        )
+        XCTAssertNil(
+            OpenAIChatGPTCreditCalculator.credits(
+                uncachedInputTokens: 1_000,
+                cachedInputTokens: 0,
+                outputTokens: 0,
+                model: "unknown-preview-model",
+                serviceTier: nil
+            )
+        )
+    }
+
+    func testLocalLogUsesModelSpecificOfficialCreditFormula() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let now = Date()
+        let timestamp = ISO8601DateFormatter().string(from: now)
+        let settings = #"{"timestamp":"\#(timestamp)","type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"model":"gpt-5.6-terra","service_tier":"default"}}}"#
+        let usage = #"{"timestamp":"\#(timestamp)","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000000,"cached_input_tokens":400000,"output_tokens":200000,"total_tokens":1200000}}}}"#
+        let file = root.appendingPathComponent("rollout-credits.jsonl")
+        try Data("\(settings)\n\(usage)\n".utf8).write(to: file)
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: file.path)
+
+        let analytics = await LocalRealtimeTokenUsageReader(sessionsRoot: root)
+            .analyticsSnapshot(now: now, authorizationGranted: true)
+
+        // Terra: 0.6M normal input * 62.5 + 0.4M cached * 6.25
+        // + 0.2M output * 375 = 115 Credits.
+        XCTAssertEqual(analytics?.todayCalculatedCredits ?? -1, 115, accuracy: 0.000_001)
+        XCTAssertEqual(analytics?.todayTokens, 800_000)
+    }
+
     func testOnlyTodayDeltasAreSummedWithoutReadingMessagePayloads() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -690,15 +893,44 @@ final class LocalRealtimeTokenUsageReaderTests: XCTestCase {
         XCTAssertEqual(afterTruncation?.todayTokens, 200)
     }
 
+    func testCachedInputIsExcludedFromEffectiveTokenUsage() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let now = Date()
+        let start = Calendar.current.startOfDay(for: now)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        func event(_ offset: TimeInterval, total: Int64, cached: Int64) -> String {
+            #"{"timestamp":"\#(formatter.string(from: start.addingTimeInterval(offset)))","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":0,"cached_input_tokens":\#(cached),"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":\#(total)}}}}"#
+        }
+        let content = [
+            event(60, total: 1_000, cached: 800),
+            event(120, total: 2_000, cached: 1_500)
+        ].joined(separator: "\n") + "\n"
+        let file = root.appendingPathComponent("rollout-cached.jsonl")
+        try Data(content.utf8).write(to: file)
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: file.path)
+
+        let analytics = await LocalRealtimeTokenUsageReader(sessionsRoot: root)
+            .analyticsSnapshot(now: now, authorizationGranted: true)
+
+        XCTAssertEqual(analytics?.tokens(on: start), 2_000)
+        XCTAssertEqual(analytics?.effectiveTokens(on: start), 500)
+        XCTAssertEqual(analytics?.todayTokens, 500)
+        XCTAssertEqual(analytics?.dailyActivity.first?.cachedInputTokens, 1_500)
+    }
+
     func testRealtimeTodayReplacesDelayedTodayButPreservesHistory() throws {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: .now)
         let yesterday = try XCTUnwrap(calendar.date(byAdding: .day, value: -1, to: today))
-        func snapshot(source: String, days: [(Date, Int64)]) -> CodexAnalyticsSnapshot {
+        func snapshot(source: String, days: [(Date, Int64)], credits: Double = 0) -> CodexAnalyticsSnapshot {
             CodexAnalyticsSnapshot(
                 fetchedAt: .now, sourceDisplayName: source, rangeStart: days.map(\.0).min(), rangeEnd: days.map(\.0).max(),
                 groupBy: "day", dailyActivity: days.map {
-                    CodexDailyActivity(date: $0.0, users: 0, threads: 0, turns: 0, credits: 0,
+                    CodexDailyActivity(date: $0.0, users: 0, threads: 0, turns: 0, credits: credits,
                         uncachedInputTokens: 0, cachedInputTokens: 0, outputTokens: 0,
                         totalTokens: $0.1, clients: [], models: [])
                 }, dailyProductUsage: [], topSkills: [], topPlugins: [], creditEventCount: nil,
@@ -707,12 +939,40 @@ final class LocalRealtimeTokenUsageReaderTests: XCTestCase {
             )
         }
         let delayed = snapshot(source: "本机 Codex 用量", days: [(yesterday, 500), (today, 100)])
-        let realtime = snapshot(source: "本机 Codex 实时用量", days: [(today, 900)])
+        let realtime = snapshot(source: "本机 Codex 实时用量", days: [(today, 900)], credits: 12.5)
         let merged = delayed.merging(realtime)
         XCTAssertEqual(merged.tokens(on: yesterday, calendar: calendar), 500)
         XCTAssertEqual(merged.tokens(on: today, calendar: calendar), 900)
+        XCTAssertEqual(merged.calculatedCredits(on: today, calendar: calendar), 12.5)
         XCTAssertEqual(merged.sourceDisplayName, "本机 Codex（实时 + 历史）")
         XCTAssertEqual(merged.compactSourceDisplayName, "本机实时")
+    }
+
+    func testRealtimeReplacesHistoricalBucketWithDifferentTimeOnSameCalendarDay() throws {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: .now)
+        let historicalTimestamp = try XCTUnwrap(calendar.date(byAdding: .hour, value: 8, to: today))
+        func snapshot(source: String, date: Date, tokens: Int64) -> CodexAnalyticsSnapshot {
+            CodexAnalyticsSnapshot(
+                fetchedAt: .now, sourceDisplayName: source, rangeStart: date, rangeEnd: date,
+                groupBy: "day", dailyActivity: [
+                    CodexDailyActivity(
+                        date: date, users: 0, threads: 0, turns: 0, credits: 0,
+                        uncachedInputTokens: 0, cachedInputTokens: 0, outputTokens: 0,
+                        totalTokens: tokens, clients: [], models: []
+                    )
+                ], dailyProductUsage: [], topSkills: [], topPlugins: [], creditEventCount: nil,
+                availableSections: [.tokenUsage], lifetimeTokens: nil, peakDailyTokens: nil,
+                currentStreakDays: nil, longestStreakDays: nil, longestRunningTurnSeconds: nil
+            )
+        }
+
+        let delayed = snapshot(source: "本机 Codex 用量", date: historicalTimestamp, tokens: 100)
+        let realtime = snapshot(source: "本机 Codex 实时用量", date: today, tokens: 900)
+        let merged = delayed.merging(realtime)
+
+        XCTAssertEqual(merged.dailyActivity.count, 1)
+        XCTAssertEqual(merged.tokens(on: today, calendar: calendar), 900)
     }
 
     func testLegacyRealtimeSourceNameIsCanonicalizedInsteadOfRepeated() throws {

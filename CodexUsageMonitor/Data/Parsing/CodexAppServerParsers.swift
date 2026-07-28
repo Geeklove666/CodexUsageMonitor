@@ -137,6 +137,7 @@ struct CodexAppServerAccountUsageParser: Sendable {
             longestRunningTurnSeconds: result.summary.longestRunningTurnSec.flatMap(Int.init(exactly:))
         )
         if snapshot.has(.tokenUsage) { snapshot.sectionSources[.tokenUsage] = "本机 Codex 用量" }
+        if snapshot.has(.tokenUsage) { snapshot.tokenRecordedDates = Set(activity.map(\.date)) }
         return snapshot
     }
 

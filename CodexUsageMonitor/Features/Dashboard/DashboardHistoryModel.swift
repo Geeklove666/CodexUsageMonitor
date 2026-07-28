@@ -9,6 +9,7 @@ final class DashboardHistoryModel {
     private(set) var points: [UsageTrendPoint] = []
     private(set) var velocity: UsageVelocity?
     private(set) var weeklySamples: [UsageHistorySample] = []
+    private(set) var weeklyCreditBalanceSamples: [CreditBalanceSample] = []
     private(set) var errorMessage: String?
 
     init(history: any UsageHistoryReading) {
@@ -23,6 +24,7 @@ final class DashboardHistoryModel {
             let availableSamples = try history.usageSamples(since: samplesStart)
             let samples = availableSamples.filter { $0.recordedAt >= rangeStart }
             weeklySamples = availableSamples.filter { $0.recordedAt >= weekStart }
+            weeklyCreditBalanceSamples = try history.creditBalanceSamples(since: weekStart)
             points = UsageTrendBuilder.makePoints(from: samples, maxPoints: 240)
             velocity = UsageTrendBuilder.makeVelocity(from: samples, now: now)
             errorMessage = nil
@@ -30,6 +32,7 @@ final class DashboardHistoryModel {
             points = []
             velocity = nil
             weeklySamples = []
+            weeklyCreditBalanceSamples = []
             errorMessage = "历史数据暂时无法读取"
         }
     }

@@ -66,6 +66,10 @@ final class DependencyContainer {
         monitoring = UsageMonitoringService(
             repository: repository,
             realtimeTokenReader: realtimeTokenReader,
+            providerRegistry: AIProviderRegistry([
+                CodexUsageProvider(repository: repository),
+                LocalClaudeUsageProvider()
+            ]),
             snapshotPipeline: snapshotPipeline,
             initialSnapshot: initialSnapshot
         )

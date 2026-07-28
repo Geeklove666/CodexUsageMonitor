@@ -83,7 +83,7 @@ struct QuotaSummaryCard: View {
     var body: some View {
         AppleCard {
             ViewThatFits(in: .horizontal) {
-                HStack(alignment: .center, spacing: 24) {
+                HStack(alignment: .center, spacing: 28) {
                     primaryCopy
                     progressColumn
                 }
@@ -98,7 +98,7 @@ struct QuotaSummaryCard: View {
 
     private var primaryCopy: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if snapshot.status != .live {
+            if snapshot.status != .live && snapshot.status != .loading {
                 StatusBadge(status: snapshot.status)
             }
             Text(snapshot.planDisplayName)
@@ -106,14 +106,15 @@ struct QuotaSummaryCard: View {
                 .foregroundStyle(.secondary)
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(snapshot.remainingText)
-                    .font(.system(size: 34, weight: .semibold, design: .rounded).monospacedDigit())
+                    .font(.system(size: 42, weight: .semibold, design: .rounded).monospacedDigit())
+                    .contentTransition(.numericText())
                 Text("剩余")
                     .font(.title3)
                     .foregroundStyle(.secondary)
             }
-            Text(snapshot.resetText)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+            Label(snapshot.resetText, systemImage: "arrow.counterclockwise")
+                .font(.title3.monospacedDigit().weight(.semibold))
+                .symbolRenderingMode(.hierarchical)
             if let velocity {
                 Label(velocity.consumedText, systemImage: "speedometer")
                     .font(.subheadline.weight(.medium))
@@ -121,7 +122,7 @@ struct QuotaSummaryCard: View {
                     .help(velocity.detailText)
             }
         }
-        .frame(minWidth: 270, alignment: .leading)
+        .frame(minWidth: 250, maxWidth: 320, alignment: .leading)
     }
 
     private var progressColumn: some View {
@@ -152,7 +153,9 @@ struct SecondaryAllowanceGrid: View {
                                 SymbolTile(symbol: allowance.kind == .percentage ? "gauge.with.dots.needle.50percent" : "number")
                                 Text(allowance.name).font(.headline)
                                 Spacer()
-                                if allowance.status != .live { StatusBadge(status: allowance.status) }
+                                if allowance.status != .live && allowance.status != .loading {
+                                    StatusBadge(status: allowance.status)
+                                }
                             }
                             Text(allowance.remainingText)
                                 .font(.title3.monospacedDigit().weight(.semibold))
@@ -181,6 +184,7 @@ struct UsageTrendSection: View {
     let points: [UsageTrendPoint]
     let errorMessage: String?
     var expanded = false
+    @State private var selectedPoint: UsageTrendPoint?
 
     var body: some View {
         AppleCard {
@@ -197,7 +201,7 @@ struct UsageTrendSection: View {
                     }
                 }
                 trendContent
-                    .frame(height: expanded ? 320 : 220)
+                    .frame(height: expanded ? 300 : 210)
                 Text(trendFootnote)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -217,25 +221,63 @@ struct UsageTrendSection: View {
     @ViewBuilder
     private var trendContent: some View {
         if points.count >= 2 {
-            Chart(points) { point in
-                LineMark(
-                    x: .value("时间", point.date),
-                    y: .value("剩余额度", point.remainingPercentage)
-                )
-                .foregroundStyle(AppleUI.accent)
-                .lineStyle(StrokeStyle(lineWidth: 2.25, lineCap: .round))
-                AreaMark(
-                    x: .value("时间", point.date),
-                    y: .value("剩余额度", point.remainingPercentage)
-                )
-                .foregroundStyle(AppleUI.accent.opacity(0.10))
-                if point.isReset {
-                    RuleMark(x: .value("重置", point.date))
-                        .foregroundStyle(.secondary.opacity(0.45))
-                        .annotation(position: .top, alignment: .leading) {
-                            Text("重置")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+            Chart {
+                ForEach(points) { point in
+                    LineMark(
+                        x: .value("时间", point.date),
+                        y: .value("剩余额度", point.remainingPercentage)
+                    )
+                    .foregroundStyle(AppleUI.accent)
+                    .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                    AreaMark(
+                        x: .value("时间", point.date),
+                        y: .value("剩余额度", point.remainingPercentage)
+                    )
+                    .foregroundStyle(AppleUI.accent.opacity(0.07))
+                    if point.isReset {
+                        RuleMark(x: .value("重置", point.date))
+                            .foregroundStyle(.secondary.opacity(0.34))
+                            .annotation(position: .top, alignment: .leading) {
+                                Text("重置")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                    }
+                    if point.id == points.last?.id {
+                        PointMark(
+                            x: .value("当前时间", point.date),
+                            y: .value("当前剩余额度", point.remainingPercentage)
+                        )
+                        .symbolSize(38)
+                        .foregroundStyle(status.progressColor)
+                    }
+                }
+                if let selectedPoint {
+                    RuleMark(x: .value("选中时间", selectedPoint.date))
+                        .foregroundStyle(.secondary.opacity(0.28))
+                    PointMark(
+                        x: .value("选中时间", selectedPoint.date),
+                        y: .value("选中额度", selectedPoint.remainingPercentage)
+                    )
+                    .symbolSize(44)
+                    .foregroundStyle(AppleUI.accent)
+                    .annotation(position: .top, spacing: 8) {
+                        trendTooltip(selectedPoint)
+                    }
+                }
+            }
+            .chartOverlay { proxy in
+                GeometryReader { geometry in
+                    Rectangle()
+                        .fill(.clear)
+                        .contentShape(Rectangle())
+                        .onContinuousHover { phase in
+                            switch phase {
+                            case let .active(location):
+                                updateSelectedPoint(at: location, proxy: proxy, geometry: geometry)
+                            case .ended:
+                                selectedPoint = nil
+                            }
                         }
                 }
             }
@@ -255,6 +297,37 @@ struct UsageTrendSection: View {
             } description: {
                 Text(errorMessage ?? "至少保存两个真实额度快照后才会绘制趋势。")
             }
+        }
+    }
+
+    private func updateSelectedPoint(at location: CGPoint, proxy: ChartProxy, geometry: GeometryProxy) {
+        guard let plotFrame = proxy.plotFrame else { return }
+        let frame = geometry[plotFrame]
+        let relativeX = location.x - frame.minX
+        guard relativeX >= 0, relativeX <= frame.width,
+              let date: Date = proxy.value(atX: relativeX)
+        else {
+            selectedPoint = nil
+            return
+        }
+        selectedPoint = points.min {
+            abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date))
+        }
+    }
+
+    private func trendTooltip(_ point: UsageTrendPoint) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(point.date.formatted(date: .abbreviated, time: .shortened))
+            Text("剩余 \(Int(point.remainingPercentage))%")
+                .fontWeight(.semibold)
+        }
+        .font(.caption)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(.separator.opacity(0.24), lineWidth: 0.5)
         }
     }
 

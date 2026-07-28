@@ -14,6 +14,10 @@ WebKit 采用按需创建：本机 Codex 或其他前置来源成功时，后台
 
 ## 提供方扩展边界
 
-`AIUsageProvider` 与提供方无关的快照模型为未来 Claude、Gemini、ChatGPT 和 API 用量接入保留稳定边界。`CodexUsageProvider` 只负责把现有 Codex 仓库结果映射到通用模型。注册表当前只注册 Codex：未实现的服务不会出现在界面中，既有 Codex 刷新链路保持不变。
+`AIUsageProvider` 与提供方无关的快照模型为未来 Claude、Gemini、ChatGPT 和 API 用量接入保留稳定边界。`CodexUsageProvider` 只负责把现有 Codex 仓库结果映射到通用模型；未实现的服务不会出现在界面中，既有 Codex 刷新链路保持不变。
+
+2.1.2 为 Provider 描述增加额度窗口、余额、本地/远程历史和成本估算能力声明，以及本机文件、CLI、网页登录、OAuth、API Key 等认证方式声明。注册表新增 `LocalClaudeUsageProvider` 作为第一个非 Codex 实现：只有用户明确授权后才解析 `~/.claude/projects` 的结构化 usage 数值、消息 ID 与时间戳，并把结果标为“本机 Token 用量”，不声称是 Claude 套餐额度。
+
+`LocalUsageEventMonitor` 使用 macOS FSEvents 监听 `.codex` 与 `.claude` 本机数据变化，1 秒合并抖动后调用 `refreshLocalUsage`。局部刷新只更新 Codex/Claude Token 模块，不访问网络额度数据源；系统睡眠时停止监听，唤醒后恢复。历史与当前快照可通过版本化 JSON/CSV 导出，脱敏诊断报告显式排除账号身份并再次经过 `SensitiveDataRedactor`。
 
 菜单弹窗和完整面板统一通过 `UsagePresentationState` 表示加载、实时、缓存、估算、离线、需要登录、失败、不可用和已耗尽状态，视图不再分别推导数据源规则。

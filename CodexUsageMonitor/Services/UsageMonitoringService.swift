@@ -6,6 +6,7 @@ final class UsageMonitoringService {
     private let logger = AppLogger(.monitoring)
     private let repository: any CodexUsageRepository
     private let realtimeTokenReader: any RealtimeTokenUsageReading
+    private let providerRegistry: AIProviderRegistry
     private let snapshotPipeline: UsageSnapshotPipeline
     private let refreshPolicy = RefreshPolicy()
     private let scheduler = RefreshScheduler()
@@ -17,6 +18,9 @@ final class UsageMonitoringService {
     private var failures = 0
     private var lastMenuOpenAt: Date?
     private var automaticRefreshSuspended = false
+    private let localCodexEventMonitor: LocalUsageEventMonitor
+    private let localClaudeEventMonitor: LocalUsageEventMonitor
+    private var localUsageRefreshTask: Task<Void, Never>?
 
     @ObservationIgnored var displayStateDidChange: (() -> Void)?
     var snapshot = CodexUsageSnapshot.unavailable {
@@ -28,26 +32,64 @@ final class UsageMonitoringService {
     var historyRevision = 0
     var diagnostic = DataSourceDiagnostic()
     var persistenceWarning: String?
+    var providerSnapshots: [AIProviderID: AIProviderUsageSnapshot] = [:]
+    var providerFailures: [AIProviderID: String] = [:]
     var status: MonitoringStatus {
         MonitoringStatus(snapshot: snapshot, failure: lastFailure, isRefreshing: isRefreshing)
     }
 
     init(repository: any CodexUsageRepository,
          realtimeTokenReader: any RealtimeTokenUsageReading,
+         providerRegistry: AIProviderRegistry = AIProviderRegistry([]),
          snapshotPipeline: UsageSnapshotPipeline,
          initialSnapshot: CodexUsageSnapshot = .unavailable) {
         self.repository = repository
         self.realtimeTokenReader = realtimeTokenReader
+        self.providerRegistry = providerRegistry
         self.snapshotPipeline = snapshotPipeline
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        localCodexEventMonitor = LocalUsageEventMonitor(paths: [
+            home.appendingPathComponent(".codex", isDirectory: true)
+        ])
+        localClaudeEventMonitor = LocalUsageEventMonitor(paths: [
+            home.appendingPathComponent(".claude", isDirectory: true)
+        ])
         snapshot = initialSnapshot
         networkMonitor.onRestored = { [weak self] in
             Task { @MainActor in self?.refreshAfterNetworkRestore() }
         }
+        let localUsageDidChange: @Sendable () -> Void = { [weak self] in
+            Task { @MainActor in await self?.refreshLocalUsage(reason: "本机会话数据变化") }
+        }
+        localCodexEventMonitor.onChange = localUsageDidChange
+        localClaudeEventMonitor.onChange = localUsageDidChange
     }
 
     func start() {
         guard !scheduler.isAutomaticLoopRunning else { return }
+        updateLocalUsageMonitoring()
         startLoop(refreshImmediately: true)
+    }
+
+    /// Keeps FSEvents dormant unless the user has enabled at least one local
+    /// usage reader. Quota refreshes do not depend on this watcher.
+    func updateLocalUsageMonitoring() {
+        guard !automaticRefreshSuspended else {
+            localCodexEventMonitor.stop()
+            localClaudeEventMonitor.stop()
+            return
+        }
+        let defaults = UserDefaults.standard
+        if defaults.bool(forKey: LocalRealtimeTokenAuthorization.preferenceKey) {
+            localCodexEventMonitor.start()
+        } else {
+            localCodexEventMonitor.stop()
+        }
+        if defaults.bool(forKey: LocalClaudeUsageAuthorization.preferenceKey) {
+            localClaudeEventMonitor.start()
+        } else {
+            localClaudeEventMonitor.stop()
+        }
     }
 
     func restartRefreshLoop() {
@@ -97,10 +139,13 @@ final class UsageMonitoringService {
     func suspendAutomaticRefresh() {
         automaticRefreshSuspended = true
         scheduler.cancelAll()
+        localCodexEventMonitor.stop()
+        localClaudeEventMonitor.stop()
     }
 
     func resumeAfterWake() {
         automaticRefreshSuspended = false
+        updateLocalUsageMonitoring()
         now = .now
         displayStateDidChange?()
         guard !scheduler.isAutomaticLoopRunning else { return }
@@ -145,6 +190,7 @@ final class UsageMonitoringService {
             guard let self else { return }
             let previous = self.snapshot
             async let realtimeValue = self.realtimeTokenReader.currentAnalyticsSnapshot()
+            async let providerValues = self.fetchAdditionalProviders(forceRefresh: forceRefresh)
             do {
                 var quota = try await self.repository.fetchQuota(forceRefresh: forceRefresh)
                 if let realtime = await realtimeValue { quota = quota.mergingAnalytics(realtime) }
@@ -175,13 +221,15 @@ final class UsageMonitoringService {
                 self.failures += 1
                 var failure = UsageFailure(error: error)
                 if self.snapshot.analytics?.todayTokens != nil {
-                    failure = failure.appendingUserContext("今日 Token 保留上次结果")
+                    failure = failure.appendingUserContext("今日套餐消耗保留上次结果")
                 }
                 self.lastFailure = failure
                 self.logger.error("Usage refresh failed [\(failure.kind.rawValue)]: \(failure.diagnosticMessage)")
                 self.diagnostic = await self.repository.currentDiagnostic()
                 self.diagnostic.lastRefreshReason = reason
             }
+            let additional = await providerValues
+            self.applyAdditionalProviders(additional)
         }
         await refreshTask?.value
         if refreshGeneration == generation {
@@ -189,6 +237,72 @@ final class UsageMonitoringService {
             activeRefreshForceRefresh = false
             isRefreshing = false
             now = .now
+        }
+    }
+
+    /// Updates local token modules only. Quota/network sources are intentionally untouched.
+    func refreshLocalUsage(reason: String) async {
+        guard !automaticRefreshSuspended else { return }
+        if let localUsageRefreshTask {
+            await localUsageRefreshTask.value
+            return
+        }
+        localUsageRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            async let codex = self.realtimeTokenReader.currentAnalyticsSnapshot()
+            async let providers = self.fetchAdditionalProviders(forceRefresh: false)
+            if let analytics = await codex {
+                self.snapshot = self.snapshot.mergingAnalytics(analytics)
+                self.applyPipelineResult(self.snapshotPipeline.persistAnalytics(self.snapshot))
+            }
+            self.applyAdditionalProviders(await providers)
+            self.now = .now
+        }
+        await localUsageRefreshTask?.value
+        localUsageRefreshTask = nil
+    }
+
+    private func fetchAdditionalProviders(forceRefresh: Bool)
+        async -> [AdditionalProviderFetch] {
+        let providers = providerRegistry.registeredProviders.filter { $0.descriptor.id != .codex }
+        return await withTaskGroup(of: AdditionalProviderFetch?.self, returning: [AdditionalProviderFetch].self) { group in
+            for provider in providers {
+                group.addTask {
+                    guard case .available = await provider.availability() else { return nil }
+                    do {
+                        return AdditionalProviderFetch(
+                            id: provider.descriptor.id,
+                            snapshot: try await provider.fetchUsage(forceRefresh: forceRefresh),
+                            failure: nil
+                        )
+                    } catch {
+                        return AdditionalProviderFetch(
+                            id: provider.descriptor.id,
+                            snapshot: nil,
+                            failure: UsageFailure(error: error)
+                        )
+                    }
+                }
+            }
+            var values: [AdditionalProviderFetch] = []
+            for await value in group {
+                if let value { values.append(value) }
+            }
+            return values.sorted { $0.id.rawValue < $1.id.rawValue }
+        }
+    }
+
+    private func applyAdditionalProviders(_ values: [AdditionalProviderFetch]) {
+        let enabled = Set(values.map(\.id))
+        providerSnapshots = providerSnapshots.filter { enabled.contains($0.key) }
+        providerFailures = providerFailures.filter { enabled.contains($0.key) }
+        for value in values {
+            if let snapshot = value.snapshot {
+                providerSnapshots[value.id] = snapshot
+                providerFailures.removeValue(forKey: value.id)
+            } else if let failure = value.failure {
+                providerFailures[value.id] = failure.userMessage
+            }
         }
     }
 
@@ -248,8 +362,18 @@ final class UsageMonitoringService {
         refreshTask?.cancel()
         analyticsTask?.cancel()
         scheduler.cancelAll()
+        localCodexEventMonitor.stop()
+        localClaudeEventMonitor.stop()
+        localUsageRefreshTask?.cancel()
         refreshTask = nil
         analyticsTask = nil
+        localUsageRefreshTask = nil
     }
 
+}
+
+private struct AdditionalProviderFetch: Sendable {
+    let id: AIProviderID
+    let snapshot: AIProviderUsageSnapshot?
+    let failure: UsageFailure?
 }

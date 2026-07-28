@@ -56,41 +56,48 @@ struct CompactUsageSummary: View {
 
     var body: some View {
         AppleCard(padding: 12, cornerRadius: AppleUI.cardRadius, material: nil) {
-            HStack(spacing: 12) {
-                UsageRing(
-                    percentage: snapshot.primaryWindow?.remainingPercentage,
-                    warning: isWarning(snapshot.primaryWindow),
-                    lineWidth: 7,
-                    showsValue: true,
-                    isEstimated: snapshot.isEstimated,
-                    valueFont: .title3
-                )
-                .frame(width: 82, height: 82)
+            VStack(spacing: 10) {
+                HStack(spacing: 12) {
+                    UsageRing(
+                        percentage: snapshot.primaryWindow?.remainingPercentage,
+                        warning: isWarning(snapshot.primaryWindow),
+                        lineWidth: 7,
+                        showsValue: true,
+                        isEstimated: snapshot.isEstimated,
+                        valueFont: .title3
+                    )
+                    .frame(width: 82, height: 82)
 
-                VStack(spacing: 0) {
-                    UsageMetricLine(title: "主额度剩余", value: percentageText(snapshot.primaryWindow?.remainingPercentage), color: quotaColor(snapshot.primaryWindow))
-                    if let secondary = snapshot.secondaryWindow {
-                        Divider().opacity(0.24)
-                        UsageMetricLine(title: "次级额度剩余", value: percentageText(secondary.remainingPercentage), color: AppleUI.purple)
+                    VStack(spacing: 0) {
+                        if let secondary = snapshot.secondaryWindow {
+                            UsageMetricLine(title: "次级额度剩余", value: percentageText(secondary.remainingPercentage), color: AppleUI.purple)
+                        }
+                        if snapshot.credits != nil {
+                            if snapshot.secondaryWindow != nil { Divider().opacity(0.24) }
+                            UsageMetricLine(title: "Credits", value: CreditsDisplay.value(snapshot.credits), color: AppleUI.purple)
+                        }
+                        if let allowance = snapshot.resetAllowance {
+                            if snapshot.secondaryWindow != nil || snapshot.credits != nil { Divider().opacity(0.24) }
+                            UsageMetricLine(
+                                title: "使用限额重置",
+                                value: allowance.availableCount > 0 ? "可用 \(allowance.availableCount) 次" : "暂无可用",
+                                color: allowance.availableCount > 0 ? AppleUI.success : .secondary
+                            )
+                        }
+                        if snapshot.secondaryWindow == nil && snapshot.credits == nil && snapshot.resetAllowance == nil {
+                            UsageMetricLine(title: "其他额度", value: "暂无数据", color: .secondary)
+                        }
                     }
-                    if snapshot.credits != nil {
-                        Divider().opacity(0.24)
-                        UsageMetricLine(title: "Credits", value: CreditsDisplay.value(snapshot.credits), color: AppleUI.purple)
-                    }
-                    if let allowance = snapshot.resetAllowance {
-                        Divider().opacity(0.24)
-                        UsageMetricLine(
-                            title: "使用限额重置",
-                            value: allowance.availableCount > 0 ? "可用 \(allowance.availableCount) 次" : "暂无可用",
-                            color: allowance.availableCount > 0 ? AppleUI.success : .secondary
-                        )
-                    }
-                    if snapshot.secondaryWindow == nil && snapshot.credits == nil && snapshot.resetAllowance == nil {
-                        Divider().opacity(0.24)
-                        UsageMetricLine(title: "其他额度", value: "暂无数据", color: .secondary)
-                    }
+                    .frame(maxWidth: .infinity)
                 }
-                .frame(maxWidth: .infinity)
+                Divider().opacity(0.24)
+                UsageProgressRow(
+                    title: "主额度",
+                    window: snapshot.primaryWindow,
+                    now: now,
+                    color: quotaColor(snapshot.primaryWindow),
+                    isEstimated: snapshot.isEstimated
+                )
             }
         }
         .accessibilityElement(children: .contain)

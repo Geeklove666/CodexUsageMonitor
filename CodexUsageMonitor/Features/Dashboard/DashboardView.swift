@@ -6,7 +6,7 @@ struct DashboardView: View {
     @Bindable var monitor: UsageMonitoringService
     @State private var historyModel: DashboardHistoryModel
     @State private var interactionModel = DashboardInteractionModel()
-    @State private var selection: DashboardSection = .overview
+    @State private var selection: DashboardSection = .summary
     @State private var chartRange: UsageHistoryRange = .week
     @State private var showsPlanReference = false
     @AppStorage(AppPreferences.Key.autoRefreshSeconds) private var autoRefreshSeconds = AutoRefreshFrequency.defaultValue.rawValue
@@ -34,14 +34,27 @@ struct DashboardView: View {
         } detail: {
             ZStack {
                 AppBackground()
-                ScrollView {
-                    VStack(alignment: .leading, spacing: AppleUI.spacingXL) {
-                        pageHeader
-                        content
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: AppleUI.spacingXL) {
+                            Color.clear
+                                .frame(height: 0)
+                                .id("dashboard-top")
+                            pageHeader
+                            content
+                        }
+                        .padding(AppleUI.contentPadding)
+                        .frame(maxWidth: 1080, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
                     }
-                    .padding(AppleUI.contentPadding)
-                    .frame(maxWidth: 1080, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .onAppear {
+                        DispatchQueue.main.async {
+                            proxy.scrollTo("dashboard-top", anchor: .top)
+                        }
+                    }
+                    .onChange(of: selection) {
+                        proxy.scrollTo("dashboard-top", anchor: .top)
+                    }
                 }
             }
             .navigationTitle(selection.title)
@@ -63,7 +76,7 @@ struct DashboardView: View {
                 Label(monitor.isRefreshing ? "刷新中" : "刷新", systemImage: "arrow.clockwise")
             }
             .disabled(monitor.isRefreshing)
-            .help("刷新额度来源，并同步刷新今日 Token")
+            .help("刷新额度来源，并同步刷新今日套餐消耗")
             .accessibilityValue(monitor.isRefreshing ? "正在刷新" : "可刷新")
         }
     }
@@ -87,11 +100,11 @@ struct DashboardView: View {
             HStack(alignment: .firstTextBaseline) {
                 headerCopy
                 Spacer(minLength: 24)
-                if dashboardStatus != .live { StatusBadge(status: dashboardStatus) }
+                if showsPageStatusBadge { StatusBadge(status: dashboardStatus) }
             }
             VStack(alignment: .leading, spacing: 10) {
                 headerCopy
-                if dashboardStatus != .live { StatusBadge(status: dashboardStatus) }
+                if showsPageStatusBadge { StatusBadge(status: dashboardStatus) }
             }
         }
     }
@@ -129,6 +142,7 @@ struct DashboardView: View {
         let weeklyTokens = DailyTokenUsageBuilder.make(
             analytics: monitor.snapshot.analytics,
             historySamples: historyModel.weeklySamples,
+            creditBalanceSamples: historyModel.weeklyCreditBalanceSamples,
             now: monitor.now
         )
         return VStack(alignment: .leading, spacing: 20) {
@@ -137,6 +151,12 @@ struct DashboardView: View {
             }
             QuotaSummaryCard(snapshot: snapshot, velocity: historyModel.velocity)
             WeeklyTokenUsageCard(summary: weeklyTokens)
+            if !monitor.providerSnapshots.isEmpty || !monitor.providerFailures.isEmpty {
+                AdditionalProviderUsageCard(
+                    snapshots: monitor.providerSnapshots,
+                    failures: monitor.providerFailures
+                )
+            }
             ResetAndAlertsSection(
                 snapshot: snapshot,
                 notificationsEnabled: notificationsEnabled,
@@ -190,40 +210,7 @@ struct DashboardView: View {
                 status: (snapshot.remainingPercent ?? 100) <= 0 ? .exhausted : snapshot.status,
                 message: alertStatusMessage
             )
-            AppleCard {
-                VStack(spacing: 0) {
-                    SettingsRow(
-                        symbol: "bell.badge.fill",
-                        color: AppleUI.accent,
-                        title: "额度通知",
-                        detail: interactionModel.notificationAuthorization.label
-                    ) {
-                        Toggle("启用额度通知", isOn: notificationsBinding).labelsHidden()
-                    }
-                    Divider().opacity(0.35).padding(.leading, 45)
-                    SettingsRow(
-                        symbol: "20.circle.fill",
-                        color: AppleUI.warning,
-                        title: "每消耗 20%",
-                        detail: "跨过 20%、40%、60%、80% 和 100% 时提醒"
-                    ) {
-                        Toggle("每消耗 20%", isOn: $notifyEvery20)
-                            .labelsHidden()
-                            .disabled(!notificationsEnabled)
-                    }
-                    Divider().opacity(0.35).padding(.leading, 45)
-                    SettingsRow(
-                        symbol: "arrow.counterclockwise.circle.fill",
-                        color: AppleUI.success,
-                        title: "额度重置",
-                        detail: "检测到新额度周期时提醒"
-                    ) {
-                        Toggle("额度重置", isOn: $notifyReset)
-                            .labelsHidden()
-                            .disabled(!notificationsEnabled)
-                    }
-                }
-            }
+            notificationSettings
         }
     }
 
@@ -232,14 +219,29 @@ struct DashboardView: View {
             AppleCard {
                 VStack(alignment: .leading, spacing: 14) {
                     SectionHeading(title: "数据来源", subtitle: "当前完整面板使用真实监控快照。")
-                    InfoRow(title: "额度来源", value: monitor.snapshot.sourceDisplayName, symbol: "externaldrive")
-                    InfoRow(title: "新鲜度", value: snapshot.status.freshnessText(fetchedAt: monitor.snapshot.fetchedAt, now: monitor.now), symbol: "clock")
-                    InfoRow(title: "来源状态", value: snapshot.status.label, symbol: snapshot.status.symbol)
-                    InfoRow(
-                        title: "网页备用来源",
-                        value: webSession.hasLoadedUsagePage ? "已就绪" : "未启用（按需加载）",
-                        symbol: "safari"
-                    )
+                    Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 12) {
+                        sourceInfoRow("额度来源", monitor.snapshot.sourceDisplayName, symbol: "externaldrive")
+                        sourceInfoRow(
+                            "新鲜度",
+                            snapshot.status.freshnessText(fetchedAt: monitor.snapshot.fetchedAt, now: monitor.now),
+                            symbol: "clock"
+                        )
+                        sourceInfoRow("来源状态", snapshot.status.label, symbol: snapshot.status.symbol)
+                        sourceInfoRow(
+                            "网页备用来源",
+                            webSession.hasLoadedUsagePage ? "已就绪" : "未启用（按需加载）",
+                            symbol: "safari"
+                        )
+                        ForEach(monitor.providerSnapshots.keys.sorted { $0.rawValue < $1.rawValue }, id: \.self) { id in
+                            if let provider = monitor.providerSnapshots[id] {
+                                sourceInfoRow(
+                                    provider.provider.displayName,
+                                    "\(provider.sourceDisplayName) · \(provider.dailyUsage.count) 天记录",
+                                    symbol: "sparkles.rectangle.stack"
+                                )
+                            }
+                        }
+                    }
                     Divider()
                     HStack {
                         Button { openWindow(id: "login"); webSession.openUsagePage(); NSApp.activate() } label: {
@@ -273,6 +275,7 @@ struct DashboardView: View {
                 }
             }
         }
+        .frame(maxWidth: 920, alignment: .leading)
     }
 
     private func settings(_ snapshot: DashboardQuotaSnapshot) -> some View {
@@ -301,7 +304,62 @@ struct DashboardView: View {
                     Button { openSettings(); NSApp.activate() } label: {
                         Label("打开应用设置", systemImage: "gearshape")
                     }
-                    .buttonStyle(GlassButtonStyle())
+                    .buttonStyle(.link)
+                }
+            }
+        }
+        .frame(maxWidth: 720, alignment: .leading)
+    }
+
+    private func sourceInfoRow(_ title: String, _ value: String, symbol: String) -> some View {
+        GridRow {
+            Image(systemName: symbol)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
+            Text(title)
+                .frame(width: 128, alignment: .leading)
+            Text(value)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .font(.body)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var notificationSettings: some View {
+        AppleCard {
+            VStack(spacing: 0) {
+                SettingsRow(
+                    symbol: "bell.badge.fill",
+                    color: AppleUI.accent,
+                    title: "额度通知",
+                    detail: interactionModel.notificationAuthorization.label
+                ) {
+                    Toggle("启用额度通知", isOn: notificationsBinding).labelsHidden()
+                }
+                Divider().opacity(0.35).padding(.leading, 45)
+                SettingsRow(
+                    symbol: "20.circle.fill",
+                    color: AppleUI.warning,
+                    title: "每消耗 20%",
+                    detail: "跨过 20%、40%、60%、80% 和 100% 时提醒"
+                ) {
+                    Toggle("每消耗 20%", isOn: $notifyEvery20)
+                        .labelsHidden()
+                        .disabled(!notificationsEnabled)
+                }
+                Divider().opacity(0.35).padding(.leading, 45)
+                SettingsRow(
+                    symbol: "arrow.counterclockwise.circle.fill",
+                    color: AppleUI.success,
+                    title: "额度重置",
+                    detail: "检测到新额度周期时提醒"
+                ) {
+                    Toggle("额度重置", isOn: $notifyReset)
+                        .labelsHidden()
+                        .disabled(!notificationsEnabled)
                 }
             }
         }
@@ -335,6 +393,10 @@ struct DashboardView: View {
             failure: monitor.lastFailure,
             isRefreshing: monitor.isRefreshing
         )
+    }
+
+    private var showsPageStatusBadge: Bool {
+        !monitor.isRefreshing && dashboardStatus != .live
     }
 
     private var selectedRefreshFrequency: AutoRefreshFrequency {
