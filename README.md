@@ -11,7 +11,7 @@
 > [!IMPORTANT]
 > 本项目是独立开发的非官方工具，与 OpenAI 无隶属、授权或背书关系。Codex、ChatGPT 及 OpenAI 是其各自权利人的商标。
 
-当前版本：**2.1.10（Build 81）**
+当前版本：**2.1.14（Build 85）**
 系统要求：**macOS 15 Sequoia 至 macOS 27 测试版**  
 架构：**Apple Silicon（arm64）**
 
@@ -31,6 +31,7 @@
 - 可选读取本机 Claude Code 最近 7 天结构化 Token 用量；该模块不读取会话正文，也不会把本地统计伪装成套餐剩余额度；
 - 支持自动刷新频率：智能、1 分钟、5 分钟、10 分钟；
 - Codex/Claude 本机会话文件变化会通过 macOS FSEvents 合并触发局部 Token 更新，不会额外请求额度或打开登录页；
+- Codex 会话统计使用固定大小流式缓冲区和增量扫描缓存，即使本机会话目录较大也不会整文件载入内存；
 - 支持缓存、估算、离线、不可用、耗尽、刷新中等明确状态；
 - 支持额度历史、趋势图、重置检测和用量提醒；
 - 支持 Light / Dark Mode、Reduce Transparency 和 VoiceOver；

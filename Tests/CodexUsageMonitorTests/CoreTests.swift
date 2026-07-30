@@ -893,6 +893,72 @@ final class LocalRealtimeTokenUsageReaderTests: XCTestCase {
         XCTAssertEqual(afterTruncation?.todayTokens, 200)
     }
 
+    func testStreamingScanHandlesChunkBoundariesOversizedLinesAndIncompleteTail() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let now = Date()
+        let start = Calendar.current.startOfDay(for: now)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        func event(_ offset: TimeInterval, total: Int64) -> String {
+            #"{"timestamp":"\#(formatter.string(from: start.addingTimeInterval(offset)))","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"total_tokens":\#(total)}}}}"#
+        }
+
+        let first = event(60, total: 1_000)
+        let second = event(120, total: 1_600)
+        let split = second.index(second.endIndex, offsetBy: -2)
+        let oversizedIrrelevantRecord = String(repeating: "x", count: 1_048_700)
+        let file = root.appendingPathComponent("rollout-streaming.jsonl")
+        try Data("\(oversizedIrrelevantRecord)\n\(first)\n\(second[..<split])".utf8).write(to: file)
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: file.path)
+
+        let reader = LocalRealtimeTokenUsageReader(sessionsRoot: root, streamChunkSize: 64)
+        let initial = await reader.analyticsSnapshot(now: now, authorizationGranted: true)
+        XCTAssertEqual(initial?.todayTokens, 1_000)
+
+        let handle = try FileHandle(forWritingTo: file)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("\(second[split...])\n".utf8))
+        try handle.close()
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(1)], ofItemAtPath: file.path)
+
+        let updated = await reader.analyticsSnapshot(now: now.addingTimeInterval(2), authorizationGranted: true)
+        XCTAssertEqual(updated?.todayTokens, 1_600)
+    }
+
+    func testPersistentScanCacheRestoresUnchangedFilesWithoutReopeningThem() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let now = Date()
+        let timestamp = ISO8601DateFormatter().string(from: now)
+        let usage = #"{"timestamp":"\#(timestamp)","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":0,"output_tokens":0,"total_tokens":1000}}}}"#
+        let rollout = root.appendingPathComponent("rollout-persisted.jsonl")
+        let cache = root.appendingPathComponent("scan-cache.plist")
+        try Data("\(usage)\n".utf8).write(to: rollout)
+        try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: rollout.path)
+
+        let initial = await LocalRealtimeTokenUsageReader(
+            sessionsRoot: root,
+            cacheStorageURL: cache
+        ).analyticsSnapshot(now: now, authorizationGranted: true)
+        XCTAssertEqual(initial?.todayTokens, 1_000)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: cache.path))
+
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: rollout.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: rollout.path)
+        }
+        let restored = await LocalRealtimeTokenUsageReader(
+            sessionsRoot: root,
+            cacheStorageURL: cache
+        ).analyticsSnapshot(now: now, authorizationGranted: true)
+        XCTAssertEqual(restored?.todayTokens, 1_000)
+    }
+
     func testCachedInputIsExcludedFromEffectiveTokenUsage() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -1071,9 +1137,20 @@ final class LifecycleStructureTests: XCTestCase {
     func testMenuClockUsesCoarseTimerAndImmediateDataChangeCallback() throws {
         let source = try String(contentsOf: repositoryRoot
             .appendingPathComponent("CodexUsageMonitor/Features/MenuBar/MenuBarController.swift"), encoding: .utf8)
-        XCTAssertTrue(source.contains("Timer(timeInterval: 30"))
+        XCTAssertTrue(source.contains("Timer(timeInterval: 60"))
+        XCTAssertTrue(source.contains("timer.tolerance = 10"))
         XCTAssertTrue(source.contains("monitor.displayStateDidChange"))
         XCTAssertFalse(source.contains("withTimeInterval: 1"))
+    }
+
+    func testClosedAuxiliaryWindowsReleaseTheirSwiftUITrees() throws {
+        let source = try String(contentsOf: repositoryRoot
+            .appendingPathComponent("CodexUsageMonitor/Features/MenuBar/MenuBarController.swift"), encoding: .utf8)
+        XCTAssertTrue(source.contains("window.isReleasedWhenClosed = true"))
+        XCTAssertTrue(source.contains("func windowWillClose"))
+        XCTAssertTrue(source.contains("dashboardWindow = nil"))
+        XCTAssertTrue(source.contains("loginWindow = nil"))
+        XCTAssertTrue(source.contains("settingsWindow = nil"))
     }
 
     func testSleepAndWakeLifecycleIsExplicitlyHandled() throws {
@@ -1190,6 +1267,47 @@ final class UsageHistoryTests: XCTestCase {
         XCTAssertEqual(restored.availableSections, analytics.availableSections)
     }
 
+    func testUnchangedAnalyticsTimestampDoesNotWriteAnotherHistoryPoint() throws {
+        let store = try UsageHistoryStore(inMemory: true)
+        let day = Calendar.current.startOfDay(for: .now)
+        let firstAnalytics = analyticsSnapshot(fetchedAt: .now, day: day, tokens: 120)
+        let secondAnalytics = analyticsSnapshot(
+            fetchedAt: .now.addingTimeInterval(30),
+            day: day,
+            tokens: 120
+        )
+        let first = historySnapshot(primary: 63, secondary: 41, analytics: firstAnalytics)
+        let second = historySnapshot(primary: 63, secondary: 41, analytics: secondAnalytics)
+
+        XCTAssertTrue(try store.saveIfNeeded(first, processActive: false))
+        XCTAssertFalse(try store.saveIfNeeded(second, processActive: false))
+        XCTAssertEqual(try store.points(since: .distantPast).count, 1)
+    }
+
+    func testChangedAnalyticsPersistsWhenQuotaIsUnchanged() throws {
+        let store = try UsageHistoryStore(inMemory: true)
+        let day = Calendar.current.startOfDay(for: .now)
+        let first = historySnapshot(
+            primary: 63,
+            secondary: 41,
+            analytics: analyticsSnapshot(fetchedAt: .now, day: day, tokens: 120)
+        )
+        let second = historySnapshot(
+            primary: 63,
+            secondary: 41,
+            analytics: analyticsSnapshot(
+                fetchedAt: .now.addingTimeInterval(30),
+                day: day,
+                tokens: 180
+            )
+        )
+
+        XCTAssertTrue(try store.saveIfNeeded(first, processActive: false))
+        XCTAssertTrue(try store.saveIfNeeded(second, processActive: false))
+        XCTAssertEqual(try store.points(since: .distantPast).count, 2)
+        XCTAssertEqual(try store.recentSnapshots().last?.analytics?.totalTokens, 180)
+    }
+
     func testResetAllowanceIsRestoredWithCachedSnapshot() async throws {
         let store = try UsageHistoryStore(inMemory: true)
         let base = historySnapshot(primary: 63, secondary: 41)
@@ -1233,16 +1351,60 @@ final class UsageHistoryTests: XCTestCase {
         XCTAssertNotNil(value.primaryWindow?.remainingPercentage)
     }
 
-    private func historySnapshot(primary: Double, secondary: Double) -> CodexUsageSnapshot {
+    private func historySnapshot(
+        primary: Double,
+        secondary: Double,
+        analytics: CodexAnalyticsSnapshot? = nil
+    ) -> CodexUsageSnapshot {
         CodexUsageSnapshot(
             primaryWindow: UsageLimitWindow(kind: .primary, remainingPercentage: primary, usedPercentage: 100 - primary,
                                             resetsAt: nil, durationDescription: "5 小时"),
             secondaryWindow: UsageLimitWindow(kind: .secondary, remainingPercentage: secondary, usedPercentage: 100 - secondary,
                                               resetsAt: nil, durationDescription: "1 周"),
+            analytics: analytics,
             sourceKind: .officialWebPage,
             sourceDisplayName: "test",
             confidence: .high,
             fieldCompleteness: 0.65
+        )
+    }
+
+    private func analyticsSnapshot(
+        fetchedAt: Date,
+        day: Date,
+        tokens: Int64
+    ) -> CodexAnalyticsSnapshot {
+        CodexAnalyticsSnapshot(
+            fetchedAt: fetchedAt,
+            sourceDisplayName: "本机 Codex 实时用量",
+            rangeStart: day,
+            rangeEnd: day,
+            groupBy: "day",
+            dailyActivity: [
+                CodexDailyActivity(
+                    date: day,
+                    users: 0,
+                    threads: 0,
+                    turns: 0,
+                    credits: 0,
+                    uncachedInputTokens: tokens,
+                    cachedInputTokens: 0,
+                    outputTokens: 0,
+                    totalTokens: tokens,
+                    clients: [],
+                    models: []
+                )
+            ],
+            dailyProductUsage: [],
+            topSkills: [],
+            topPlugins: [],
+            creditEventCount: nil,
+            availableSections: [.tokenUsage],
+            lifetimeTokens: nil,
+            peakDailyTokens: nil,
+            currentStreakDays: nil,
+            longestStreakDays: nil,
+            longestRunningTurnSeconds: nil
         )
     }
 }

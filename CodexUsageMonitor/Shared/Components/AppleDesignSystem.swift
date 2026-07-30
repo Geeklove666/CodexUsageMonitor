@@ -6,13 +6,13 @@ enum AppleUI {
     static let spacingM: CGFloat = 12
     static let spacingL: CGFloat = 16
     static let spacingXL: CGFloat = 24
-    static let contentPadding: CGFloat = 24
+    static let contentPadding: CGFloat = 22
     static let panelPadding: CGFloat = 12
 
-    static let iconRadius: CGFloat = 10
-    static let controlRadius: CGFloat = 13
-    static let cardRadius: CGFloat = 16
-    static let panelRadius: CGFloat = 24
+    static let iconRadius: CGFloat = 9
+    static let controlRadius: CGFloat = 12
+    static let cardRadius: CGFloat = 14
+    static let panelRadius: CGFloat = 22
     static let smallRadius = controlRadius
     static let heroRadius = cardRadius
     static let largeRadius = cardRadius
@@ -23,14 +23,30 @@ enum AppleUI {
     static let success = Color(nsColor: .systemGreen)
     static let warning = Color(nsColor: .systemOrange)
     static let danger = Color(nsColor: .systemRed)
+
+    static func quotaColor(remainingPercentage: Double?) -> Color {
+        guard let remainingPercentage else { return accent }
+        return switch remainingPercentage {
+        case 80...: success
+        case 60..<80: accent
+        case 40..<60: warning
+        case 20..<40: Color(nsColor: .systemOrange)
+        default: danger
+        }
+    }
 }
 
 struct AppBackground: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
-        Color(nsColor: reduceTransparency ? .windowBackgroundColor : .controlBackgroundColor)
-        .ignoresSafeArea()
+        Color(nsColor: .windowBackgroundColor)
+            .overlay {
+                if !reduceTransparency {
+                    Color(nsColor: .controlBackgroundColor).opacity(0.18)
+                }
+            }
+            .ignoresSafeArea()
     }
 }
 
@@ -61,6 +77,11 @@ struct AppleCard<Content: View>: View {
                 shape.strokeBorder(Color(nsColor: .separatorColor).opacity(contrast == .increased ? 0.55 : 0.18),
                                    lineWidth: contrast == .increased ? 1 : 0.75)
             }
+            .shadow(
+                color: colorScheme == .dark ? .clear : .black.opacity(0.025),
+                radius: 1.5,
+                y: 1
+            )
     }
 
     private var stableFill: Color {
@@ -76,7 +97,7 @@ struct SectionHeading: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: AppleUI.spacingXS) {
-            Text(title).font(.title3.weight(.semibold))
+            Text(title).font(.headline.weight(.semibold))
             if let subtitle {
                 Text(subtitle).font(.subheadline).foregroundStyle(.secondary)
             }
@@ -93,7 +114,7 @@ struct SymbolTile: View {
             .font(.system(size: 15, weight: .semibold))
             .symbolRenderingMode(.hierarchical)
             .foregroundStyle(color)
-            .frame(width: 30, height: 30)
+            .frame(width: 28, height: 28)
             .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: AppleUI.iconRadius, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: AppleUI.iconRadius, style: .continuous)

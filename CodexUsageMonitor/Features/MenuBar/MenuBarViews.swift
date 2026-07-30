@@ -275,41 +275,18 @@ private struct MenuPanelRootBackground: View {
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: AppleUI.panelRadius, style: .continuous)
         ZStack {
-            if reduceTransparency {
-                shape.fill(baseColor)
-            } else {
-                shape.fill(baseColor)
-                shape.fill(
-                    LinearGradient(
-                        colors: [
-                            Color(nsColor: .systemOrange).opacity(0.028),
-                            Color(nsColor: .systemPink).opacity(0.022),
-                            Color(nsColor: .systemPurple).opacity(0.020),
-                            Color(nsColor: .systemBlue).opacity(0.018)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
+            shape.fill(baseColor)
+            if !reduceTransparency {
+                shape.fill(Color.white.opacity(colorScheme == .dark ? 0.012 : 0.12))
             }
         }
         .overlay(alignment: .topLeading) {
             if !reduceTransparency {
                 Circle()
-                    .fill(Color.white.opacity(0.035))
-                    .blur(radius: 28)
-                    .frame(width: 160, height: 160)
-                    .offset(x: -42, y: -64)
-                    .clipShape(shape)
-            }
-        }
-        .overlay(alignment: .bottomTrailing) {
-            if !reduceTransparency {
-                Circle()
-                    .fill(Color(nsColor: .systemBlue).opacity(0.010))
+                    .fill(Color.white.opacity(colorScheme == .dark ? 0.018 : 0.16))
                     .blur(radius: 32)
-                    .frame(width: 180, height: 180)
-                    .offset(x: 62, y: 76)
+                    .frame(width: 180, height: 120)
+                    .offset(x: -36, y: -72)
                     .clipShape(shape)
             }
         }

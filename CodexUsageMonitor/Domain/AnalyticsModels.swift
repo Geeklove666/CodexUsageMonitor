@@ -80,6 +80,30 @@ struct CodexAnalyticsSnapshot: Sendable, Codable, Equatable {
 
     var todayCalculatedCredits: Double? { calculatedCredits(on: .now) }
 
+    /// Compares the data that is meaningful to history and presentation while
+    /// intentionally ignoring the collection timestamp. A refresh that reads
+    /// the same counters should not cause a database write or a full UI reload.
+    func hasSameContent(as other: CodexAnalyticsSnapshot) -> Bool {
+        sourceDisplayName == other.sourceDisplayName
+            && rangeStart == other.rangeStart
+            && rangeEnd == other.rangeEnd
+            && groupBy == other.groupBy
+            && dailyActivity == other.dailyActivity
+            && dailyProductUsage == other.dailyProductUsage
+            && topSkills == other.topSkills
+            && topPlugins == other.topPlugins
+            && creditEventCount == other.creditEventCount
+            && availableSections == other.availableSections
+            && lifetimeTokens == other.lifetimeTokens
+            && peakDailyTokens == other.peakDailyTokens
+            && currentStreakDays == other.currentStreakDays
+            && longestStreakDays == other.longestStreakDays
+            && longestRunningTurnSeconds == other.longestRunningTurnSeconds
+            && sectionSources == other.sectionSources
+            && warnings == other.warnings
+            && tokenRecordedDates == other.tokenRecordedDates
+    }
+
     var clientBreakdown: [CodexActivityBreakdown] { aggregate(\.clients) }
     var modelBreakdown: [CodexActivityBreakdown] { aggregate(\.models) }
     var productSurfaceAverages: [(name: String, percentage: Double)] {

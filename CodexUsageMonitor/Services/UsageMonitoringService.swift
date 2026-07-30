@@ -49,7 +49,7 @@ final class UsageMonitoringService {
         self.snapshotPipeline = snapshotPipeline
         let home = FileManager.default.homeDirectoryForCurrentUser
         localCodexEventMonitor = LocalUsageEventMonitor(paths: [
-            home.appendingPathComponent(".codex", isDirectory: true)
+            home.appendingPathComponent(".codex/sessions", isDirectory: true)
         ])
         localClaudeEventMonitor = LocalUsageEventMonitor(paths: [
             home.appendingPathComponent(".claude", isDirectory: true)
@@ -309,6 +309,11 @@ final class UsageMonitoringService {
     private func startAnalyticsEnrichment(for quota: CodexUsageSnapshot, generation: UInt64) {
         analyticsTask = Task { [weak self] in
             guard let self else { return }
+            defer {
+                if self.refreshGeneration == generation {
+                    self.analyticsTask = nil
+                }
+            }
             let enriched = await self.repository.fetchAnalytics(for: quota, forceRefresh: false)
             guard !Task.isCancelled,
                   self.refreshGeneration == generation,

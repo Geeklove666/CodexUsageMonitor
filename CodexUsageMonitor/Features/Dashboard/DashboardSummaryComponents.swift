@@ -109,6 +109,7 @@ struct WeeklyTokenUsageCard: View {
                             dateCell(day.date)
                             Text(usageValue(day))
                                 .monospacedDigit()
+                                .contentTransition(.numericText())
                                 .foregroundStyle(day.measurement == nil ? .secondary : .primary)
                             usageType(day)
                             Text(day.resetCount.map(String.init) ?? "--")
@@ -157,7 +158,9 @@ struct WeeklyTokenUsageCard: View {
     private func metric(_ title: String, _ value: String) -> some View {
         VStack(alignment: .trailing, spacing: 3) {
             Text(title).font(.caption).foregroundStyle(.secondary)
-            Text(value).font(.headline.monospacedDigit())
+            Text(value)
+                .font(.headline.monospacedDigit())
+                .contentTransition(.numericText())
         }
     }
 
