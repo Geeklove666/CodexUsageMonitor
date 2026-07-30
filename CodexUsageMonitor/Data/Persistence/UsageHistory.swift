@@ -82,25 +82,42 @@ final class UsageHistoryStore: UsageHistoryReading, UsageHistoryWriting {
         descriptor.fetchLimit = 1
         let last = try context.fetch(descriptor).first
         let newAnalyticsData = snapshot.analytics.flatMap { try? JSONEncoder().encode($0) }
+        let analyticsChanged = !Self.analyticsContentMatches(
+            storedData: last?.analyticsData,
+            current: snapshot.analytics
+        )
         if let last {
-            if last.id == snapshot.id, last.analyticsData != newAnalyticsData {
-                last.analyticsData = newAnalyticsData
+            if last.id == snapshot.id {
+                let changed = analyticsChanged || last.hasQuotaChanges(comparedTo: snapshot)
+                guard changed else { return false }
+                last.update(from: snapshot, analyticsData: newAnalyticsData, processActive: processActive)
                 try context.save()
                 return true
             }
-            let changed = abs((last.primaryRemaining ?? -1) - (snapshot.primaryWindow?.remainingPercentage ?? -1)) >= 0.5
-                || abs((last.secondaryRemaining ?? -1) - (snapshot.secondaryWindow?.remainingPercentage ?? -1)) >= 0.5
-                || last.creditsRemaining != snapshot.credits?.remaining
-                || last.restoredResetAllowance?.availableCount != snapshot.resetAllowance?.availableCount
-                || last.restoredAccountIdentity != snapshot.accountIdentity
-                || last.primaryReset != snapshot.primaryWindow?.resetsAt
-                || last.secondaryReset != snapshot.secondaryWindow?.resetsAt
-                || last.sourceKindRaw != snapshot.sourceKind.rawValue
+            let changed = analyticsChanged
+                || last.hasQuotaChanges(comparedTo: snapshot)
                 || snapshot.fetchedAt.timeIntervalSince(last.fetchedAt) >= 600
             guard changed else { return false }
         }
         context.insert(UsageSnapshotEntity(snapshot: snapshot, processActive: processActive))
         try context.save(); return true
+    }
+
+    private static func analyticsContentMatches(
+        storedData: Data?,
+        current: CodexAnalyticsSnapshot?
+    ) -> Bool {
+        switch (storedData, current) {
+        case (nil, nil):
+            return true
+        case let (data?, value?):
+            guard let stored = try? JSONDecoder().decode(CodexAnalyticsSnapshot.self, from: data) else {
+                return false
+            }
+            return stored.hasSameContent(as: value)
+        default:
+            return false
+        }
     }
 
     func points(since date: Date) throws -> [UsageSnapshotEntity] {
@@ -187,6 +204,49 @@ final class UsageHistoryStore: UsageHistoryReading, UsageHistoryWriting {
 }
 
 private extension UsageSnapshotEntity {
+    func hasQuotaChanges(comparedTo snapshot: CodexUsageSnapshot) -> Bool {
+        abs((primaryRemaining ?? -1) - (snapshot.primaryWindow?.remainingPercentage ?? -1)) >= 0.5
+            || abs((secondaryRemaining ?? -1) - (snapshot.secondaryWindow?.remainingPercentage ?? -1)) >= 0.5
+            || creditsRemaining != snapshot.credits?.remaining
+            || restoredResetAllowance != snapshot.resetAllowance
+            || restoredAccountIdentity != snapshot.accountIdentity
+            || primaryReset != snapshot.primaryWindow?.resetsAt
+            || secondaryReset != snapshot.secondaryWindow?.resetsAt
+            || planName != snapshot.planName
+            || sourceKindRaw != snapshot.sourceKind.rawValue
+            || isEstimated != snapshot.isEstimated
+            || isCached != snapshot.isCached
+            || confidenceRaw != snapshot.confidence.rawValue
+            || fieldCompleteness != snapshot.fieldCompleteness
+    }
+
+    func update(
+        from snapshot: CodexUsageSnapshot,
+        analyticsData: Data?,
+        processActive: Bool
+    ) {
+        fetchedAt = snapshot.fetchedAt
+        sourceUpdatedAt = snapshot.sourceUpdatedAt
+        planName = snapshot.planName
+        primaryRemaining = snapshot.primaryWindow?.remainingPercentage
+        primaryReset = snapshot.primaryWindow?.resetsAt
+        primaryDuration = snapshot.primaryWindow?.durationDescription
+        secondaryRemaining = snapshot.secondaryWindow?.remainingPercentage
+        secondaryReset = snapshot.secondaryWindow?.resetsAt
+        secondaryDuration = snapshot.secondaryWindow?.durationDescription
+        creditsRemaining = snapshot.credits?.remaining
+        creditsUnit = snapshot.credits?.currencyOrUnit
+        resetAllowanceData = snapshot.resetAllowance.flatMap { try? JSONEncoder().encode($0) }
+        self.analyticsData = analyticsData
+        accountIdentityData = snapshot.accountIdentity.flatMap { try? JSONEncoder().encode($0) }
+        sourceKindRaw = snapshot.sourceKind.rawValue
+        isEstimated = snapshot.isEstimated
+        isCached = snapshot.isCached
+        confidenceRaw = snapshot.confidence.rawValue
+        fieldCompleteness = snapshot.fieldCompleteness
+        self.processActive = processActive
+    }
+
     var restoredSnapshot: CodexUsageSnapshot? {
         guard !isEstimated,
               let sourceKind = UsageSourceKind(rawValue: sourceKindRaw),

@@ -107,6 +107,7 @@ struct QuotaSummaryCard: View {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(snapshot.remainingText)
                     .font(.system(size: 42, weight: .semibold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(AppleUI.quotaColor(remainingPercentage: snapshot.remainingPercent))
                     .contentTransition(.numericText())
                 Text("剩余")
                     .font(.title3)
@@ -130,7 +131,8 @@ struct QuotaSummaryCard: View {
             LinearQuotaProgress(value: snapshot.remainingPercent,
                                 status: snapshot.status,
                                 label: "主额度",
-                                resetText: snapshot.resetText)
+                                resetText: snapshot.resetText,
+                                tint: AppleUI.quotaColor(remainingPercentage: snapshot.remainingPercent))
             Text(snapshot.statusMessage)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -168,7 +170,8 @@ struct SecondaryAllowanceGrid: View {
                                 LinearQuotaProgress(value: allowance.remainingPercent,
                                                     status: allowance.status,
                                                     label: allowance.name,
-                                                    resetText: allowance.resetText)
+                                                    resetText: allowance.resetText,
+                                                    tint: AppleUI.quotaColor(remainingPercentage: allowance.remainingPercent))
                             }
                         }
                     }
@@ -458,6 +461,7 @@ struct LinearQuotaProgress: View {
     let status: UsagePresentationState
     let label: String
     let resetText: String
+    var tint: Color? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -473,7 +477,7 @@ struct LinearQuotaProgress: View {
                     Capsule().fill(.secondary.opacity(0.16))
                     if let value {
                         Capsule()
-                            .fill(status.progressColor)
+                            .fill(tint ?? status.progressColor)
                             .frame(width: proxy.size.width * min(max(value / 100, 0), 1))
                             .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: value)
                     }

@@ -124,6 +124,24 @@ final class NativeUISnapshotSmokeTests: XCTestCase {
         XCTAssertFalse(source.contains("shape.fill(.thinMaterial)"))
         XCTAssertFalse(source.contains("shape.fill(.ultraThinMaterial)"))
         XCTAssertFalse(source.contains("systemPink).opacity(0.16)"))
+        XCTAssertFalse(source.contains("systemPink).opacity(0.022)"))
+        XCTAssertFalse(source.contains("systemPurple).opacity(0.020)"))
+    }
+
+    func testQuotaProgressUsesSemanticRemainingColor() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let designSystem = try String(contentsOf: repositoryRoot
+            .appendingPathComponent("CodexUsageMonitor/Shared/Components/AppleDesignSystem.swift"),
+            encoding: .utf8)
+        let dashboard = try String(contentsOf: repositoryRoot
+            .appendingPathComponent("CodexUsageMonitor/Features/Dashboard/DashboardComponents.swift"),
+            encoding: .utf8)
+
+        XCTAssertTrue(designSystem.contains("static func quotaColor(remainingPercentage: Double?)"))
+        XCTAssertTrue(dashboard.contains("tint: AppleUI.quotaColor(remainingPercentage: snapshot.remainingPercent)"))
     }
 
     func testCardsKeepNeutralFillOverMaterial() throws {

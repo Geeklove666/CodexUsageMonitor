@@ -46,7 +46,9 @@ struct SettingsNavigationBar: View {
                         .frame(height: 34)
                         .foregroundStyle(selection == section ? Color.primary : Color.secondary)
                         .background(
-                            selection == section ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(.clear),
+                            selection == section
+                                ? AnyShapeStyle(Color(nsColor: .selectedContentBackgroundColor).opacity(0.14))
+                                : AnyShapeStyle(.clear),
                             in: RoundedRectangle(cornerRadius: AppleUI.iconRadius, style: .continuous)
                         )
                 }
@@ -55,7 +57,10 @@ struct SettingsNavigationBar: View {
             Spacer()
         }
         .padding(.horizontal, 22)
-        .padding(.vertical, 10)
-        .liquidGlassSurface(cornerRadius: AppleUI.cardRadius)
+        .padding(.vertical, 9)
+        .background(.bar)
+        .overlay(alignment: .bottom) {
+            Divider().opacity(0.55)
+        }
     }
 }

@@ -57,7 +57,7 @@ struct DashboardView: View {
                     }
                 }
             }
-            .navigationTitle(selection.title)
+            .navigationTitle("")
             .toolbar { toolbarContent }
         }
         .task {
@@ -112,7 +112,7 @@ struct DashboardView: View {
     private var headerCopy: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(selection.title)
-                .font(.largeTitle.weight(.semibold))
+                .font(.title.weight(.semibold))
             Text(selection.subtitle)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)

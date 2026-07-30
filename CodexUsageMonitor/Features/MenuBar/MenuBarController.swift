@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 @MainActor
-final class MenuBarController: NSObject {
+final class MenuBarController: NSObject, NSWindowDelegate {
     private let monitor: UsageMonitoringService
     private let history: UsageHistoryStore
     private let webSession: WebViewSession
@@ -36,9 +36,10 @@ final class MenuBarController: NSObject {
     }
 
     private func startStatusUpdates() {
-        let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.monitor.updateClock() }
         }
+        timer.tolerance = 10
         RunLoop.main.add(timer, forMode: .common)
         statusTimer = timer
     }
@@ -77,7 +78,6 @@ final class MenuBarController: NSObject {
     }
 
     private func openPanel() {
-        Task { await monitor.refreshIfStaleForMenuOpen() }
         let root = MenuPanelView(
             monitor: monitor,
             history: history,
@@ -154,7 +154,7 @@ final class MenuBarController: NSObject {
         closePanel()
         if dashboardWindow == nil {
             dashboardWindow = makeWindow(
-                title: "Codex Usage",
+                title: "Codex 额度监控",
                 size: NSSize(width: 960, height: 680),
                 content: DashboardView(monitor: monitor, history: history)
                     .environment(webSession)
@@ -198,8 +198,20 @@ final class MenuBarController: NSObject {
         window.title = title
         window.contentView = NSHostingView(rootView: content)
         window.center()
-        window.isReleasedWhenClosed = false
+        window.isReleasedWhenClosed = true
+        window.delegate = self
         return window
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        if window === dashboardWindow {
+            dashboardWindow = nil
+        } else if window === loginWindow {
+            loginWindow = nil
+        } else if window === settingsWindow {
+            settingsWindow = nil
+        }
     }
 
     private func show(_ window: NSWindow?) {

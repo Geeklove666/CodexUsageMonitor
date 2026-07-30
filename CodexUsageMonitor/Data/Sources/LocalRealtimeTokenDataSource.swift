@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 enum LocalRealtimeTokenAuthorization {
     static let preferenceKey = AppPreferences.Key.localRealtimeTokenUsageEnabled
@@ -6,12 +7,28 @@ enum LocalRealtimeTokenAuthorization {
 
 struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
     let sessionsRoot: URL
+    private let streamChunkSize: Int
     private let cache: LocalRealtimeTokenScanCache
 
     init(sessionsRoot: URL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".codex/sessions", isDirectory: true)) {
+        .appendingPathComponent(".codex/sessions", isDirectory: true),
+         streamChunkSize: Int = 256 * 1_024,
+         cacheStorageURL: URL? = nil) {
         self.sessionsRoot = sessionsRoot
-        cache = LocalRealtimeTokenScanCache()
+        self.streamChunkSize = max(64, streamChunkSize)
+        let defaultRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex/sessions", isDirectory: true)
+            .standardizedFileURL
+        let storageURL = cacheStorageURL ?? (sessionsRoot.standardizedFileURL == defaultRoot
+            ? Self.persistentCacheURL
+            : nil)
+        cache = LocalRealtimeTokenScanCache(storageURL: storageURL)
+    }
+
+    private static var persistentCacheURL: URL? {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("local.codex-usage-monitor", isDirectory: true)
+            .appendingPathComponent("realtime-token-scan-v1.plist")
     }
 
     fileprivate struct RolloutFile: Sendable, Equatable {
@@ -20,7 +37,7 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
         let modifiedAt: Date
     }
 
-    fileprivate struct FileScanState: Sendable {
+    fileprivate struct FileScanState: Sendable, Codable {
         let size: Int64
         let modifiedAt: Date
         let scannedOffset: UInt64
@@ -33,7 +50,7 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
         let tokensByDay: [Date: TokenTotals]
     }
 
-    fileprivate struct TokenTotals: Sendable {
+    fileprivate struct TokenTotals: Sendable, Codable {
         var processed: Int64 = 0
         var cachedInput: Int64 = 0
         var credits: Double = 0
@@ -100,10 +117,12 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
         guard let rangeStart = calendar.date(byAdding: .day, value: -6, to: startOfToday),
               let files = rolloutFiles(modifiedSince: rangeStart) else { return nil }
         let previousStates = await cache.states(for: files)
+        let chunkSize = streamChunkSize
         let states = await Task.detached(priority: .utility) {
             Dictionary(uniqueKeysWithValues: files.map { file in
                 (file.url, Self.scan(file: file, previous: previousStates[file.url],
-                                     now: now, rangeStart: rangeStart, calendar: calendar))
+                                     now: now, rangeStart: rangeStart, calendar: calendar,
+                                     chunkSize: chunkSize))
             })
         }.value
         await cache.store(states, retaining: files)
@@ -171,7 +190,7 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
     }
 
     private static func scan(file: RolloutFile, previous: FileScanState?, now: Date,
-                             rangeStart: Date, calendar: Calendar) -> FileScanState {
+                             rangeStart: Date, calendar: Calendar, chunkSize: Int) -> FileScanState {
         if let previous, previous.size == file.size, previous.modifiedAt == file.modifiedAt {
             return pruning(previous, rangeStart: rangeStart)
         }
@@ -187,13 +206,145 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
         var currentModel = canContinue ? previous?.currentModel : nil
         var currentServiceTier = canContinue ? previous?.currentServiceTier : nil
         var tokensByDay = canContinue ? previous?.tokensByDay ?? [:] : [:]
-        let data: Data
-        do {
-            let handle = try FileHandle(forReadingFrom: file.url)
-            defer { try? handle.close() }
-            try handle.seek(toOffset: startingOffset)
-            data = try handle.readToEnd() ?? Data()
-        } catch {
+        let descriptor: Int32 = file.url.withUnsafeFileSystemRepresentation { path in
+            guard let path else { return Int32(-1) }
+            return Darwin.open(path, O_RDONLY)
+        }
+        guard descriptor >= 0,
+              Darwin.lseek(descriptor, off_t(startingOffset), SEEK_SET) >= 0 else {
+            if descriptor >= 0 { Darwin.close(descriptor) }
+            return pruning(previous ?? FileScanState(
+                size: file.size, modifiedAt: file.modifiedAt, scannedOffset: 0,
+                previousTotal: nil, previousInput: nil, previousCachedInput: nil,
+                previousOutput: nil, currentModel: nil, currentServiceTier: nil,
+                tokensByDay: [:]
+            ), rangeStart: rangeStart)
+        }
+        defer { Darwin.close(descriptor) }
+
+        let decoder = JSONDecoder()
+        let fractionalTimestamp = ISO8601DateFormatter()
+        fractionalTimestamp.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let standardTimestamp = ISO8601DateFormatter()
+        let tokenMarker = Data("\"token_count\"".utf8)
+        let settingsMarker = Data("\"thread_settings_applied\"".utf8)
+        let maximumLineSize = 1_048_576
+
+        // Returns false only for a relevant, possibly incomplete JSON record.
+        // A caller may retain that final record and retry it after the file grows.
+        func process(_ line: Data) -> Bool {
+            guard line.range(of: tokenMarker) != nil || line.range(of: settingsMarker) != nil else {
+                return true
+            }
+            guard let event = try? decoder.decode(RolloutEvent.self, from: line),
+                  let timestamp = fractionalTimestamp.date(from: event.timestamp)
+                    ?? standardTimestamp.date(from: event.timestamp) else {
+                return false
+            }
+            if event.payload.type == "thread_settings_applied",
+               let settings = event.payload.threadSettings {
+                currentModel = settings.model ?? currentModel
+                currentServiceTier = settings.serviceTier ?? currentServiceTier
+            }
+            guard event.payload.type == "token_count", let info = event.payload.info else {
+                return true
+            }
+            let current = info.totalTokenUsage.totalTokens
+            let currentInput = info.totalTokenUsage.inputTokens
+            let currentCachedInput = info.totalTokenUsage.cachedInputTokens ?? 0
+            let currentOutput = info.totalTokenUsage.outputTokens
+            let increment = previousTotal.map { current >= $0 ? current - $0 : current } ?? current
+            let inputIncrement = currentInput.map { value in
+                previousInput.map { value >= $0 ? value - $0 : value } ?? value
+            }
+            let cachedIncrement = previousCachedInput.map {
+                currentCachedInput >= $0 ? currentCachedInput - $0 : currentCachedInput
+            } ?? currentCachedInput
+            let outputIncrement = currentOutput.map { value in
+                previousOutput.map { value >= $0 ? value - $0 : value } ?? value
+            }
+            previousTotal = current
+            previousInput = currentInput
+            previousCachedInput = currentCachedInput
+            previousOutput = currentOutput
+            if timestamp >= rangeStart, timestamp <= now.addingTimeInterval(60), increment >= 0 {
+                let credits = currentModel.flatMap { model in
+                    OpenAIChatGPTCreditCalculator.credits(
+                        uncachedInputTokens: max(0, (inputIncrement ?? 0) - cachedIncrement),
+                        cachedInputTokens: max(0, cachedIncrement),
+                        outputTokens: max(0, outputIncrement ?? 0),
+                        model: model,
+                        serviceTier: currentServiceTier
+                    )
+                } ?? 0
+                tokensByDay[calendar.startOfDay(for: timestamp), default: TokenTotals()].add(
+                    processed: increment,
+                    cachedInput: max(0, cachedIncrement),
+                    credits: credits
+                )
+            }
+            return true
+        }
+
+        var lineBuffer = Data()
+        lineBuffer.reserveCapacity(min(maximumLineSize, chunkSize))
+        var scannedOffset = startingOffset
+        var streamOffset = startingOffset
+        var skippingOversizedLine = false
+        var bytes = [UInt8](repeating: 0, count: chunkSize)
+        var readFailed = false
+
+        while true {
+            let count = bytes.withUnsafeMutableBytes { rawBuffer in
+                Darwin.read(descriptor, rawBuffer.baseAddress, chunkSize)
+            }
+            if count == 0 { break }
+            if count < 0 {
+                if errno == EINTR { continue }
+                readFailed = true
+                break
+            }
+            let chunkStartOffset = streamOffset
+            streamOffset += UInt64(count)
+            var segmentStart = 0
+
+            for index in 0..<count where bytes[index] == 0x0A {
+                if !skippingOversizedLine {
+                    let segmentCount = index - segmentStart
+                    if lineBuffer.count + segmentCount <= maximumLineSize {
+                        lineBuffer.append(contentsOf: bytes[segmentStart..<index])
+                    } else {
+                        lineBuffer.removeAll(keepingCapacity: true)
+                        skippingOversizedLine = true
+                    }
+                }
+
+                if !skippingOversizedLine {
+                    _ = autoreleasepool { process(lineBuffer) }
+                }
+                lineBuffer.removeAll(keepingCapacity: true)
+                skippingOversizedLine = false
+                scannedOffset = chunkStartOffset + UInt64(index + 1)
+                segmentStart = index + 1
+            }
+
+            if segmentStart < count {
+                if skippingOversizedLine {
+                    scannedOffset = streamOffset
+                } else {
+                    let segmentCount = count - segmentStart
+                    if lineBuffer.count + segmentCount <= maximumLineSize {
+                        lineBuffer.append(contentsOf: bytes[segmentStart..<count])
+                    } else {
+                        lineBuffer.removeAll(keepingCapacity: true)
+                        skippingOversizedLine = true
+                        scannedOffset = streamOffset
+                    }
+                }
+            }
+        }
+
+        if readFailed {
             return pruning(previous ?? FileScanState(
                 size: file.size, modifiedAt: file.modifiedAt, scannedOffset: 0,
                 previousTotal: nil, previousInput: nil, previousCachedInput: nil,
@@ -202,83 +353,16 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
             ), rangeStart: rangeStart)
         }
 
-        let decoder = JSONDecoder()
-        let fractionalTimestamp = ISO8601DateFormatter()
-        fractionalTimestamp.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let standardTimestamp = ISO8601DateFormatter()
-        let tokenMarker = Data("\"token_count\"".utf8)
-        let settingsMarker = Data("\"thread_settings_applied\"".utf8)
-        var cursor = data.startIndex
-        var consumed = data.startIndex
-        while cursor < data.endIndex {
-            let newline = data[cursor...].firstIndex(of: 0x0A)
-            let lineEnd = newline ?? data.endIndex
-            let line = data.subdata(in: cursor..<lineEnd)
-            var mayAdvance = true
-            if line.count <= 1_048_576,
-               (line.range(of: tokenMarker) != nil || line.range(of: settingsMarker) != nil) {
-                if let event = try? decoder.decode(RolloutEvent.self, from: line),
-                   let timestamp = fractionalTimestamp.date(from: event.timestamp)
-                    ?? standardTimestamp.date(from: event.timestamp) {
-                    if event.payload.type == "thread_settings_applied",
-                       let settings = event.payload.threadSettings {
-                        currentModel = settings.model ?? currentModel
-                        currentServiceTier = settings.serviceTier ?? currentServiceTier
-                    }
-                    guard event.payload.type == "token_count", let info = event.payload.info else {
-                        consumed = newline.map { data.index(after: $0) } ?? lineEnd
-                        if let newline { cursor = data.index(after: newline); continue }
-                        break
-                    }
-                    let current = info.totalTokenUsage.totalTokens
-                    let currentInput = info.totalTokenUsage.inputTokens
-                    let currentCachedInput = info.totalTokenUsage.cachedInputTokens ?? 0
-                    let currentOutput = info.totalTokenUsage.outputTokens
-                    let increment = previousTotal.map { current >= $0 ? current - $0 : current } ?? current
-                    let inputIncrement = currentInput.map { value in
-                        previousInput.map { value >= $0 ? value - $0 : value } ?? value
-                    }
-                    let cachedIncrement = previousCachedInput.map {
-                        currentCachedInput >= $0 ? currentCachedInput - $0 : currentCachedInput
-                    } ?? currentCachedInput
-                    let outputIncrement = currentOutput.map { value in
-                        previousOutput.map { value >= $0 ? value - $0 : value } ?? value
-                    }
-                    previousTotal = current
-                    previousInput = currentInput
-                    previousCachedInput = currentCachedInput
-                    previousOutput = currentOutput
-                    if timestamp >= rangeStart, timestamp <= now.addingTimeInterval(60), increment >= 0 {
-                        let credits = currentModel.flatMap { model in
-                            OpenAIChatGPTCreditCalculator.credits(
-                                uncachedInputTokens: max(0, (inputIncrement ?? 0) - cachedIncrement),
-                                cachedInputTokens: max(0, cachedIncrement),
-                                outputTokens: max(0, outputIncrement ?? 0),
-                                model: model,
-                                serviceTier: currentServiceTier
-                            )
-                        } ?? 0
-                        tokensByDay[calendar.startOfDay(for: timestamp), default: TokenTotals()].add(
-                            processed: increment,
-                            cachedInput: max(0, cachedIncrement),
-                            credits: credits
-                        )
-                    }
-                } else if newline == nil {
-                    mayAdvance = false
-                }
-            }
-            guard mayAdvance else { break }
-            consumed = newline.map { data.index(after: $0) } ?? lineEnd
-            guard let newline else { break }
-            cursor = data.index(after: newline)
+        if !skippingOversizedLine, !lineBuffer.isEmpty,
+           autoreleasepool(invoking: { process(lineBuffer) }) {
+            scannedOffset = streamOffset
         }
 
         tokensByDay = tokensByDay.filter { $0.key >= rangeStart }
         return FileScanState(
             size: file.size,
             modifiedAt: file.modifiedAt,
-            scannedOffset: startingOffset + UInt64(data.distance(from: data.startIndex, to: consumed)),
+            scannedOffset: scannedOffset,
             previousTotal: previousTotal,
             previousInput: previousInput,
             previousCachedInput: previousCachedInput,
@@ -308,6 +392,26 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
 
 private actor LocalRealtimeTokenScanCache {
     private var fileStates: [URL: LocalRealtimeTokenUsageReader.FileScanState] = [:]
+    private let storageURL: URL?
+
+    private struct PersistedEntry: Codable {
+        let url: URL
+        let state: LocalRealtimeTokenUsageReader.FileScanState
+    }
+
+    private struct PersistedPayload: Codable {
+        let version: Int
+        let entries: [PersistedEntry]
+    }
+
+    init(storageURL: URL? = nil) {
+        self.storageURL = storageURL
+        guard let storageURL,
+              let data = try? Data(contentsOf: storageURL),
+              let payload = try? PropertyListDecoder().decode(PersistedPayload.self, from: data),
+              payload.version == 1 else { return }
+        fileStates = Dictionary(uniqueKeysWithValues: payload.entries.map { ($0.url, $0.state) })
+    }
 
     func states(for files: [LocalRealtimeTokenUsageReader.RolloutFile])
         -> [URL: LocalRealtimeTokenUsageReader.FileScanState] {
@@ -319,5 +423,27 @@ private actor LocalRealtimeTokenScanCache {
                retaining files: [LocalRealtimeTokenUsageReader.RolloutFile]) {
         let active = Set(files.map(\.url))
         fileStates = states.filter { active.contains($0.key) }
+        persist()
+    }
+
+    private func persist() {
+        guard let storageURL else { return }
+        let payload = PersistedPayload(
+            version: 1,
+            entries: fileStates
+                .map { PersistedEntry(url: $0.key, state: $0.value) }
+                .sorted { $0.url.path < $1.url.path }
+        )
+        guard let data = try? PropertyListEncoder().encode(payload) else { return }
+        do {
+            try FileManager.default.createDirectory(
+                at: storageURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try data.write(to: storageURL, options: .atomic)
+        } catch {
+            // The cache is an optimization only; an unwritable cache must never
+            // prevent live usage data from being returned.
+        }
     }
 }

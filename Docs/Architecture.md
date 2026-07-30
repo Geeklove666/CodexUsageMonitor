@@ -10,7 +10,7 @@ WebKit 采用按需创建：本机 Codex 或其他前置来源成功时，后台
 
 完整面板按页面编排、展示组件和展示模型分文件维护；历史读取由独立的 `DashboardHistoryModel` 驱动。本机 Codex 链路按数据源编排、`app-server` stdio 客户端和响应解析拆分，进程控制与 JSON 数据模型不再与授权/UI 状态混放。拆分保持类型为模块内部可见，避免形成额外公共 API。
 
-缓存从 SwiftData 最近真实快照恢复，并持续为估算器提供历史。缓存新鲜度：5 分钟内新鲜、15 分钟内可用缓存、60 分钟内过期缓存；超过 60 分钟或额度周期后拒绝展示为当前数据。Analytics 为每个官方响应保存可用性，未返回与真实零值分开呈现。
+缓存从 SwiftData 最近真实快照恢复，并持续为估算器提供历史。缓存新鲜度：5 分钟内新鲜、15 分钟内可用缓存、60 分钟内过期缓存；超过 60 分钟或额度周期后拒绝展示为当前数据。Analytics 为每个官方响应保存可用性，未返回与真实零值分开呈现。本机 Codex 日志使用固定大小 POSIX 缓冲区逐行解析，单条记录上限为 1 MiB；扫描状态以版本化 Property List 保存在系统 Caches 目录，后续启动只读取追加内容，缓存不可用时安全回退为完整扫描。
 
 ## 提供方扩展边界
 
@@ -18,6 +18,6 @@ WebKit 采用按需创建：本机 Codex 或其他前置来源成功时，后台
 
 2.1.2 为 Provider 描述增加额度窗口、余额、本地/远程历史和成本估算能力声明，以及本机文件、CLI、网页登录、OAuth、API Key 等认证方式声明。注册表新增 `LocalClaudeUsageProvider` 作为第一个非 Codex 实现：只有用户明确授权后才解析 `~/.claude/projects` 的结构化 usage 数值、消息 ID 与时间戳，并把结果标为“本机 Token 用量”，不声称是 Claude 套餐额度。
 
-`LocalUsageEventMonitor` 使用 macOS FSEvents 监听 `.codex` 与 `.claude` 本机数据变化，1 秒合并抖动后调用 `refreshLocalUsage`。局部刷新只更新 Codex/Claude Token 模块，不访问网络额度数据源；系统睡眠时停止监听，唤醒后恢复。历史与当前快照可通过版本化 JSON/CSV 导出，脱敏诊断报告显式排除账号身份并再次经过 `SensitiveDataRedactor`。
+`LocalUsageEventMonitor` 使用 macOS FSEvents 监听 `.codex/sessions` 与 `.claude` 本机数据变化，1 秒合并抖动后调用 `refreshLocalUsage`。局部刷新只更新 Codex/Claude Token 模块，不访问网络额度数据源；系统睡眠时停止监听，唤醒后恢复。历史与当前快照可通过版本化 JSON/CSV 导出，脱敏诊断报告显式排除账号身份并再次经过 `SensitiveDataRedactor`。
 
 菜单弹窗和完整面板统一通过 `UsagePresentationState` 表示加载、实时、缓存、估算、离线、需要登录、失败、不可用和已耗尽状态，视图不再分别推导数据源规则。
