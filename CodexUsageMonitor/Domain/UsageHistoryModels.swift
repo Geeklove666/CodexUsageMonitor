@@ -7,6 +7,9 @@ struct UsageHistorySample: Identifiable, Sendable, Equatable {
     let resetsAt: Date?
     let resetAllowanceAvailable: Int?
     let isCached: Bool
+    let accountIdentity: CodexAccountIdentity?
+    let sourceKind: UsageSourceKind?
+    let planName: String?
 
     init(
         id: UUID = UUID(),
@@ -14,7 +17,10 @@ struct UsageHistorySample: Identifiable, Sendable, Equatable {
         remainingPercentage: Double,
         resetsAt: Date?,
         resetAllowanceAvailable: Int? = nil,
-        isCached: Bool
+        isCached: Bool,
+        accountIdentity: CodexAccountIdentity? = nil,
+        sourceKind: UsageSourceKind? = nil,
+        planName: String? = nil
     ) {
         self.id = id
         self.recordedAt = recordedAt
@@ -22,6 +28,9 @@ struct UsageHistorySample: Identifiable, Sendable, Equatable {
         self.resetsAt = resetsAt
         self.resetAllowanceAvailable = resetAllowanceAvailable
         self.isCached = isCached
+        self.accountIdentity = accountIdentity
+        self.sourceKind = sourceKind
+        self.planName = planName
     }
 }
 
@@ -66,13 +75,13 @@ struct UsageVelocity: Sendable, Equatable {
     let observationHours: Double
 
     var consumedText: String {
-        "近 24 小时消耗 \(Int(consumedPercentage.rounded()))%"
+        "观察期消耗 \(CountFormatter.decimal(consumedPercentage))%"
     }
 
     var detailText: String {
         guard observationHours > 0 else { return "样本不足" }
         let dailyRate = consumedPercentage / observationHours * 24
-        return "当前节奏约 \(Int(dailyRate.rounded()))% / 天"
+        return "近 \(DurationFormatter.compactChinese(observationHours * 3600))，当前节奏约 \(CountFormatter.decimal(dailyRate)) 个百分点 / 天"
     }
 }
 
