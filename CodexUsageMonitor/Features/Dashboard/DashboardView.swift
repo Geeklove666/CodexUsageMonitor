@@ -150,6 +150,7 @@ struct DashboardView: View {
                 InlineNotice(status: snapshot.status, message: snapshot.statusMessage)
             }
             QuotaSummaryCard(snapshot: snapshot, velocity: historyModel.velocity)
+            UsagePaceCard(assessment: paceAssessment)
             WeeklyTokenUsageCard(summary: weeklyTokens)
             if !monitor.providerSnapshots.isEmpty || !monitor.providerFailures.isEmpty {
                 AdditionalProviderUsageCard(
@@ -172,6 +173,7 @@ struct DashboardView: View {
                 InlineNotice(status: snapshot.status, message: snapshot.statusMessage)
             }
             QuotaSummaryCard(snapshot: snapshot, velocity: historyModel.velocity)
+            UsagePaceCard(assessment: paceAssessment)
             SecondaryAllowanceGrid(allowances: snapshot.secondaryAllowances)
             UsageTrendSection(
                 range: $chartRange,
@@ -393,6 +395,16 @@ struct DashboardView: View {
             failure: monitor.lastFailure,
             isRefreshing: monitor.isRefreshing
         )
+    }
+
+    private var paceAssessment: UsagePaceAssessment {
+        if historyModel.errorMessage != nil {
+            return .unavailable("历史数据暂时无法读取，请稍后重试。")
+        }
+        if monitor.lastFailure != nil {
+            return .unavailable("最新额度刷新未成功，请刷新后查看预测。")
+        }
+        return UsagePaceBuilder.assess(snapshot: monitor.snapshot, samples: historyModel.paceSamples, now: monitor.now)
     }
 
     private var showsPageStatusBadge: Bool {
