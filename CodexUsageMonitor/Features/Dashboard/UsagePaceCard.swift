@@ -74,36 +74,10 @@ struct UsagePaceCard: View {
 
     private func projectionChart(_ projection: UsagePaceProjection) -> some View {
         Chart {
-            ForEach(projection.samples) { sample in
-                LineMark(
-                    x: .value("时间", sample.recordedAt),
-                    y: .value("真实剩余额度", sample.remainingPercentage),
-                    series: .value("曲线", "真实快照")
-                )
-                .foregroundStyle(AppleUI.accent)
-                .lineStyle(StrokeStyle(lineWidth: 2))
-            }
-            ForEach(0..<2) { endpoint in
-                LineMark(
-                    x: .value("时间", endpoint == 0 ? projection.observedAt : projection.projectionEnd),
-                    y: .value("预测剩余额度", endpoint == 0 ? projection.remainingPercentage : projection.projectedRemainingAtReset),
-                    series: .value("曲线", "按当前速度")
-                )
-                .foregroundStyle(AppleUI.warning)
-                .lineStyle(StrokeStyle(lineWidth: 2, dash: [5, 4]))
-                LineMark(
-                    x: .value("时间", endpoint == 0 ? projection.observedAt : projection.resetsAt),
-                    y: .value("均匀用至重置", endpoint == 0 ? projection.remainingPercentage : 0),
-                    series: .value("曲线", "均匀用至重置")
-                )
-                .foregroundStyle(.secondary.opacity(0.6))
-                .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 4]))
-            }
-            RuleMark(x: .value("服务方重置时间", projection.resetsAt))
-                .foregroundStyle(.secondary.opacity(0.4))
-                .annotation(position: .top, alignment: .trailing) {
-                    Text("重置").font(.caption2).foregroundStyle(.secondary)
-                }
+            historyMarks(projection.samples)
+            projectedMarks(projection)
+            referenceMarks(projection)
+            resetMark(projection.resetsAt)
         }
         .chartYScale(domain: 0...100)
         .chartYAxis {
@@ -115,5 +89,45 @@ struct UsagePaceCard: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("额度预测图")
         .accessibilityValue("\(projection.headline)，当前速度每小时消耗 \(CountFormatter.decimal(projection.percentagePointsPerHour)) 个百分点，重置时间 \(projection.resetsAt.formatted(date: .abbreviated, time: .shortened))。")
+    }
+
+    private func historyMarks(_ samples: [UsageHistorySample]) -> some ChartContent {
+        ForEach(samples) { sample in
+            LineMark(x: .value("时间", sample.recordedAt),
+                     y: .value("真实剩余额度", sample.remainingPercentage),
+                     series: .value("曲线", "真实快照"))
+                .foregroundStyle(AppleUI.accent)
+                .lineStyle(StrokeStyle(lineWidth: 2))
+        }
+    }
+
+    private func projectedMarks(_ projection: UsagePaceProjection) -> some ChartContent {
+        ForEach(0..<2) { endpoint in
+            let date: Date = endpoint == 0 ? projection.observedAt : projection.projectionEnd
+            let remaining: Double = endpoint == 0 ? projection.remainingPercentage : projection.projectedRemainingAtReset
+            LineMark(x: .value("时间", date), y: .value("预测剩余额度", remaining),
+                     series: .value("曲线", "按当前速度"))
+                .foregroundStyle(AppleUI.warning)
+                .lineStyle(StrokeStyle(lineWidth: 2, dash: [5, 4]))
+        }
+    }
+
+    private func referenceMarks(_ projection: UsagePaceProjection) -> some ChartContent {
+        ForEach(0..<2) { endpoint in
+            let date: Date = endpoint == 0 ? projection.observedAt : projection.resetsAt
+            let remaining: Double = endpoint == 0 ? projection.remainingPercentage : 0.0
+            LineMark(x: .value("时间", date), y: .value("均匀用至重置", remaining),
+                     series: .value("曲线", "均匀用至重置"))
+                .foregroundStyle(Color.secondary.opacity(0.6))
+                .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 4]))
+        }
+    }
+
+    private func resetMark(_ resetsAt: Date) -> some ChartContent {
+        RuleMark(x: .value("服务方重置时间", resetsAt))
+            .foregroundStyle(Color.secondary.opacity(0.4))
+            .annotation(position: .top, alignment: .trailing) {
+                Text("重置").font(.caption2).foregroundStyle(.secondary)
+            }
     }
 }
