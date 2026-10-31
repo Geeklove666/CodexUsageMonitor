@@ -4,6 +4,7 @@ enum DashboardSection: String, CaseIterable, Identifiable {
     case summary
     case overview
     case usageHistory
+    case leaderboard
     case alerts
     case dataSource
     case settings
@@ -15,6 +16,7 @@ enum DashboardSection: String, CaseIterable, Identifiable {
         case .summary: "总结"
         case .overview: "额度详情"
         case .usageHistory: "使用历史"
+        case .leaderboard: "Token 排行榜"
         case .alerts: "告警"
         case .dataSource: "数据来源"
         case .settings: "设置"
@@ -26,6 +28,7 @@ enum DashboardSection: String, CaseIterable, Identifiable {
         case .summary: "一页查看核心额度、消耗速度与最近一周 Token；缺失时显示 Credits 估算。"
         case .overview: "查看额度窗口、子额度与历史变化。"
         case .usageHistory: "带可访问趋势图和表格视图的本地历史。"
+        case .leaderboard: "社区日榜、周榜、月榜；公开展示你选择的用户 ID。"
         case .alerts: "额度变化的阈值与提醒规则。"
         case .dataSource: "来源状态、时间戳与套餐价格上下文。"
         case .settings: "调整刷新行为与数据完整性偏好。"
@@ -37,6 +40,7 @@ enum DashboardSection: String, CaseIterable, Identifiable {
         case .summary: "rectangle.grid.2x2"
         case .overview: "gauge.with.dots.needle.50percent"
         case .usageHistory: "chart.xyaxis.line"
+        case .leaderboard: "trophy"
         case .alerts: "bell.badge"
         case .dataSource: "externaldrive.connected.to.line.below"
         case .settings: "gearshape"

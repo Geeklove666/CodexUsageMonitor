@@ -101,26 +101,30 @@ struct UsagePaceCard: View {
         }
     }
 
+    @ChartContentBuilder
     private func projectedMarks(_ projection: UsagePaceProjection) -> some ChartContent {
-        ForEach(0..<2) { endpoint in
-            let date: Date = endpoint == 0 ? projection.observedAt : projection.projectionEnd
-            let remaining: Double = endpoint == 0 ? projection.remainingPercentage : projection.projectedRemainingAtReset
-            LineMark(x: .value("时间", date), y: .value("预测剩余额度", remaining),
-                     series: .value("曲线", "按当前速度"))
-                .foregroundStyle(AppleUI.warning)
-                .lineStyle(StrokeStyle(lineWidth: 2, dash: [5, 4]))
-        }
+        projectedMark(at: projection.observedAt, remaining: projection.remainingPercentage)
+        projectedMark(at: projection.projectionEnd, remaining: projection.projectedRemainingAtReset)
     }
 
+    private func projectedMark(at date: Date, remaining: Double) -> some ChartContent {
+        LineMark(x: .value("时间", date), y: .value("预测剩余额度", remaining),
+                 series: .value("曲线", "按当前速度"))
+            .foregroundStyle(AppleUI.warning)
+            .lineStyle(StrokeStyle(lineWidth: 2, dash: [5, 4]))
+    }
+
+    @ChartContentBuilder
     private func referenceMarks(_ projection: UsagePaceProjection) -> some ChartContent {
-        ForEach(0..<2) { endpoint in
-            let date: Date = endpoint == 0 ? projection.observedAt : projection.resetsAt
-            let remaining: Double = endpoint == 0 ? projection.remainingPercentage : 0.0
-            LineMark(x: .value("时间", date), y: .value("均匀用至重置", remaining),
-                     series: .value("曲线", "均匀用至重置"))
-                .foregroundStyle(Color.secondary.opacity(0.6))
-                .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 4]))
-        }
+        referenceMark(at: projection.observedAt, remaining: projection.remainingPercentage)
+        referenceMark(at: projection.resetsAt, remaining: 0)
+    }
+
+    private func referenceMark(at date: Date, remaining: Double) -> some ChartContent {
+        LineMark(x: .value("时间", date), y: .value("均匀用至重置", remaining),
+                 series: .value("曲线", "均匀用至重置"))
+            .foregroundStyle(Color.secondary.opacity(0.6))
+            .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 4]))
     }
 
     private func resetMark(_ resetsAt: Date) -> some ChartContent {

@@ -129,6 +129,8 @@ struct DashboardView: View {
             overview(snapshot)
         case .usageHistory:
             usageHistory(snapshot)
+        case .leaderboard:
+            LeaderboardDashboardView()
         case .alerts:
             alerts(snapshot)
         case .dataSource:
