@@ -54,7 +54,7 @@
 
 ## 源码与部署
 
-网页源码位于工作区 `Leaderboard/`，使用 Vinext、Cloudflare Workers 和 D1，拥有独立的 Sites 源码仓库；主软件仓库忽略该嵌套仓库，避免错误创建 submodule。站点身份保存在 `Leaderboard/.openai/hosting.json`，更新必须沿用既有 project ID。SQL 迁移位于网页源码 `drizzle/`。
+网页源码位于工作区 `Leaderboard/`，使用 Vinext、Cloudflare Workers 和 D1，拥有独立的 Sites 源码仓库；主软件仓库忽略该嵌套仓库，避免错误创建 submodule。[网站源码快照](TokenLeague-source.zip) 对应已部署的源码提交 `23fe9b7a282c83e8ed8cf7febcaed1ef06a39b5a`，包含依赖锁文件、数据库迁移和测试，不包含凭据、数据库内容或构建缓存。站点身份保存在 `Leaderboard/.openai/hosting.json`，维护现有站点应沿用既有 project ID；部署自己的副本则先注册新站点并替换该 ID。SQL 迁移位于网页源码 `drizzle/`。
 
 网页检查：`node --test tests/rules.test.mjs`、`tsc --noEmit`。本机预览可运行 `node tests/api-smoke.mjs` 检查模拟登录、连接码、上传、三种周期和退出行为；此脚本拒绝对生产域名执行，不会在正式榜单写入测试数据。
 
