@@ -238,6 +238,7 @@ final class UsageMonitoringService {
             isRefreshing = false
             now = .now
         }
+        Task { await LeaderboardSyncService.shared.syncIfEnabled() }
     }
 
     /// Updates local token modules only. Quota/network sources are intentionally untouched.
@@ -260,6 +261,7 @@ final class UsageMonitoringService {
         }
         await localUsageRefreshTask?.value
         localUsageRefreshTask = nil
+        Task { await LeaderboardSyncService.shared.syncIfEnabled() }
     }
 
     private func fetchAdditionalProviders(forceRefresh: Bool)
