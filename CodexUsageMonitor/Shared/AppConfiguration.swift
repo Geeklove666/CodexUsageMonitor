@@ -26,7 +26,8 @@ enum AppPreferences {
         Key.reuseLocalCodexLogin: false,
         Key.allowCustomCodexExecutable: false,
         Key.localRealtimeTokenUsageEnabled: false,
-        Key.localClaudeUsageEnabled: false
+        Key.localClaudeUsageEnabled: false,
+        LeaderboardConfiguration.enabledKey: false
     ]
 }
 

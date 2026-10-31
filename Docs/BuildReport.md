@@ -1,5 +1,16 @@
 # 构建与测试记录
 
+## 2026-10-25：主额度消耗预测（未发布）
+
+- 环境：Apple Silicon，Command Line Tools 的 Swift 6.4 与 macOS 27 SDK；未安装完整 Xcode。
+- 完整 `swift test`：未通过环境准备阶段。Command Line Tools 缺少 SwiftUI／SwiftData 宏插件及 XCTest，不能据此确认整包构建或全量测试通过。
+- 专项验证：在临时 Swift Package 中编译实际 Domain、预测／趋势算法、DashboardHistoryModel、新增卡片及原样抽取的 AppleUI／AppleCard／SectionHeading；将 XCTest 断言替换为同等的可执行断言后，执行 18 项预测／历史检查、4 项既有趋势检查、2 项原生 UI 渲染检查，共 24 项通过。此结果不替代全量 XCTest。
+- 实际原生预览：420／880 pt 两种宽度，浅色／深色各一张，尺寸分别为 420 × 384、880 × 371；已检查宽版浅色和窄版深色图，文字、曲线和图例正常。未单独切换系统 Reduce Motion／Reduce Transparency 或进行 VoiceOver 操作测试。
+- `plutil` 检查两份 plist、`bash -n Scripts/package-dmg.sh`、`git diff --check` 通过。
+- 本次未生成发行 App／DMG，也未修改已安装的 App。CI 已配置保存新卡片预览，但因 GitHub 连接写入返回 403、本机 Git 无可用凭据，尚未推送或触发远端 CI。
+
+以下为既有版本的历史记录。
+
 日期：2026-07-17
 
 ## 工具链

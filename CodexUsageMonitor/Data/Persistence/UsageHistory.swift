@@ -135,7 +135,10 @@ final class UsageHistoryStore: UsageHistoryReading, UsageHistoryWriting {
                 remainingPercentage: remaining,
                 resetsAt: entity.primaryReset,
                 resetAllowanceAvailable: entity.restoredResetAllowance?.availableCount,
-                isCached: entity.isCached
+                isCached: entity.isCached,
+                accountIdentity: entity.restoredAccountIdentity,
+                sourceKind: UsageSourceKind(rawValue: entity.sourceKindRaw),
+                planName: entity.planName
             )
         }
     }

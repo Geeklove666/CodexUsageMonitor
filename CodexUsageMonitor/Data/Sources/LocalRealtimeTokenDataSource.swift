@@ -8,13 +8,16 @@ enum LocalRealtimeTokenAuthorization {
 struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
     let sessionsRoot: URL
     private let streamChunkSize: Int
+    private let calendar: Calendar
     private let cache: LocalRealtimeTokenScanCache
 
     init(sessionsRoot: URL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".codex/sessions", isDirectory: true),
          streamChunkSize: Int = 256 * 1_024,
-         cacheStorageURL: URL? = nil) {
+         cacheStorageURL: URL? = nil,
+         calendar: Calendar = .current) {
         self.sessionsRoot = sessionsRoot
+        self.calendar = calendar
         self.streamChunkSize = max(64, streamChunkSize)
         let defaultRoot = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex/sessions", isDirectory: true)
@@ -112,7 +115,7 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
 
     func analyticsSnapshot(now: Date = .now, authorizationGranted: Bool? = nil) async -> CodexAnalyticsSnapshot? {
         guard authorizationGranted ?? UserDefaults.standard.bool(forKey: LocalRealtimeTokenAuthorization.preferenceKey) else { return nil }
-        let calendar = Calendar.current
+        let calendar = self.calendar
         let startOfToday = calendar.startOfDay(for: now)
         guard let rangeStart = calendar.date(byAdding: .day, value: -6, to: startOfToday),
               let files = rolloutFiles(modifiedSince: rangeStart) else { return nil }
@@ -126,7 +129,7 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
             })
         }.value
         await cache.store(states, retaining: files)
-        return Self.snapshot(now: now, rangeStart: rangeStart, states: states)
+        return Self.snapshot(now: now, rangeStart: rangeStart, states: states, calendar: calendar)
     }
 
     func currentAnalyticsSnapshot() async -> CodexAnalyticsSnapshot? {
@@ -134,7 +137,7 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
     }
 
     private static func snapshot(now: Date, rangeStart: Date,
-                                 states: [URL: FileScanState]) -> CodexAnalyticsSnapshot? {
+                                 states: [URL: FileScanState], calendar: Calendar) -> CodexAnalyticsSnapshot? {
         var tokensByDay: [Date: TokenTotals] = [:]
         for state in states.values {
             for (date, tokens) in state.tokensByDay where date >= rangeStart {
@@ -150,7 +153,7 @@ struct LocalRealtimeTokenUsageReader: RealtimeTokenUsageReading, Sendable {
             fetchedAt: now,
             sourceDisplayName: "本机 Codex 实时用量",
             rangeStart: rangeStart,
-            rangeEnd: Calendar.current.startOfDay(for: now),
+            rangeEnd: calendar.startOfDay(for: now),
             groupBy: "day",
             dailyActivity: tokensByDay.keys.sorted().map { date in
                 CodexDailyActivity(

@@ -33,11 +33,10 @@ enum OpenAIChatGPTCreditCalculator {
         serviceTier: String?
     ) -> Double? {
         guard let rate = rate(for: model) else { return nil }
-        let base = (
-            Double(max(0, uncachedInputTokens)) * rate.input
-                + Double(max(0, cachedInputTokens)) * rate.cachedInput
-                + Double(max(0, outputTokens)) * rate.output
-        ) / 1_000_000
+        let inputCredits = Double(max(Int64(0), uncachedInputTokens)) * rate.input
+        let cachedCredits = Double(max(Int64(0), cachedInputTokens)) * rate.cachedInput
+        let outputCredits = Double(max(Int64(0), outputTokens)) * rate.output
+        let base = (inputCredits + cachedCredits + outputCredits) / 1_000_000
         return base * speedMultiplier(model: model, serviceTier: serviceTier)
     }
 

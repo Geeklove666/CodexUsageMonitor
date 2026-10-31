@@ -17,4 +17,13 @@ jobs:
       - name: Build
         run: swift build
       - name: Test
+        env:
+          PACE_PREVIEW_DIR: ${{ runner.temp }}/pace-previews
         run: swift test
+      - name: Upload quota forecast previews
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quota-forecast-previews
+          path: ${{ runner.temp }}/pace-previews/*.png
+          if-no-files-found: ignore
