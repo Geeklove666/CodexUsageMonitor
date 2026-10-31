@@ -22,7 +22,7 @@
 - Credits 剩余额度按整数显示，避免长小数干扰菜单栏可读性；
 - 今日用量优先显示本机结构化 `token_count` 的有效 Token（扣除缓存输入）；当天完全没有 Token 记录时，才根据 Credits 余额下降显示明确标注的估算值；
 - 套餐剩余百分比和重置时间仍直接采用 OpenAI 服务端返回的限额，不用本机 Token 反推；
-- 完整 Dashboard 提供总结、额度详情、使用历史、告警、数据来源和设置六个页面，并默认打开总结页；
+- 完整 Dashboard 提供总结、额度详情、使用历史、排行榜、告警、数据来源和设置七个页面，并默认打开总结页；
 - 支持本机 Codex 登录数据源，优先读取这台 Mac 已登录的 Codex 额度信息；
 - 支持本机 Codex app-server 额度、账号身份、Credits、重置次数和临时失败重试；
 - 启用本机 Codex 后可直接从菜单栏刷新本机额度，不会重复打开网页登录流程；
@@ -86,7 +86,7 @@
 
 ## 隐私说明
 
-- 不上传登录态、Cookie、Token、Session ID、提示词、回复或代码内容；
+- 不向排行榜上传 OpenAI 登录态、Cookie、认证 Token、Session ID、提示词、回复或代码内容；
 - 本机每日统计只扫描 `~/.codex/sessions` 中最近 7 天的结构化 Token 计数、模型、速度和时间戳；Token 缺失时可根据真实 Credits 余额变化提供估算；
 - Claude Code 本机统计只扫描 `~/.claude/projects` 中结构化用量字段、消息 ID 和时间戳，用于去重和按日汇总；
 - Web 登录使用应用内隔离的 WebKit 会话；
