@@ -18,7 +18,7 @@ struct SettingsView: View {
     @AppStorage(LocalRealtimeTokenAuthorization.preferenceKey) private var localRealtimeTokenUsage = false
     @AppStorage(LocalClaudeUsageAuthorization.preferenceKey) private var localClaudeUsage = false
     @State private var model = SettingsModel()
-    @State private var selection: SettingsSection = .general
+    @AppStorage(SettingsSection.preferenceKey) private var selection: SettingsSection = .general
     @State private var showsLocalCodexConsent = false
     @State private var showsRealtimeTokenConsent = false
     @State private var showsClearAllConfirmation = false
@@ -38,6 +38,7 @@ struct SettingsView: View {
                             switch selection {
                             case .general: generalSettings
                             case .dataSources: dataSourceSettings
+                            case .leaderboard: LeaderboardSettingsView(monitor:monitor)
                             case .notifications: notificationSettings
                             case .privacy: privacySettings
                             }
@@ -83,7 +84,7 @@ struct SettingsView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("这会清除历史、OpenAI 网页登录状态、本机 Codex 授权、实时 Token 授权与 Claude Code 本机用量授权。下次刷新需要重新登录或重新授权。")
+            Text("这会清除历史、OpenAI 网页登录状态、本机 Codex 授权、实时 Token 授权、Claude Code 本机用量授权与排行榜设备授权。云端排名可在排行榜网页退出隐藏。下次刷新需要重新登录或重新授权。")
         }
         .alert("允许读取本机 Claude Code 用量？", isPresented: $showsClaudeUsageConsent) {
             Button("授权并启用") {
@@ -478,6 +479,8 @@ struct SettingsView: View {
     }
 
     private func clearOrdinarySettings() {
+        UserDefaults.standard.set(false,forKey:LeaderboardConfiguration.enabledKey)
+        Task { await LeaderboardSyncService.shared.disconnect() }
         UserDefaults.standard.removeObject(forKey: LocalCodexSessionAuthorization.preferenceKey)
         UserDefaults.standard.removeObject(forKey: LocalRealtimeTokenAuthorization.preferenceKey)
         UserDefaults.standard.removeObject(forKey: LocalClaudeUsageAuthorization.preferenceKey)

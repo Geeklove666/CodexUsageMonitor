@@ -1,7 +1,8 @@
 import SwiftUI
 
 enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, dataSources, notifications, privacy
+    static let preferenceKey = "settingsSelectedSection"
+    case general, dataSources, leaderboard, notifications, privacy
 
     var id: Self { self }
 
@@ -9,6 +10,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general: "常规"
         case .dataSources: "数据源"
+        case .leaderboard: "排行榜"
         case .notifications: "通知"
         case .privacy: "隐私"
         }
@@ -18,6 +20,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general: "调整应用的基础行为"
         case .dataSources: "选择额度读取方式并管理授权"
+        case .leaderboard: "自愿分享每日有效 Token，设置公开 ID 与设备授权"
         case .notifications: "只在重要状态变化时打扰你"
         case .privacy: "管理保存在这台 Mac 上的数据"
         }
@@ -27,6 +30,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general: "gearshape.fill"
         case .dataSources: "externaldrive.connected.to.line.below.fill"
+        case .leaderboard: "trophy.fill"
         case .notifications: "bell.fill"
         case .privacy: "hand.raised.fill"
         }
